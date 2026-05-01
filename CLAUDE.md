@@ -44,12 +44,18 @@ Unit and integration tests use **Swift Testing**, not XCTest. Swift Testing has 
 
 Choosing XCTest in 2026 with a Swift 6 strict project would read as a stale-template signal in senior review, in the same way that targeting iOS 17 would.
 
-**Must test**:
-- `PersistedUserStateStore`: round-trip, concurrent writes, debounce, survival across re-init.
-- `LocalStoryRepository`: page count, ID uniqueness across pages, deterministic output, JSON parse.
-- `PlaybackController`: tick advance, pause/resume preserves progress, restart on item change resets to 0, scenePhase pause halts ticks and resumes from same offset.
-- `ViewerStateModel`: all state transitions (next/prev item, next/prev user, dismiss on end), seen marking fires only after 1.5s OR on explicit next-tap, optimistic like flips state before persistence completes.
-- `StoryListViewModel`: pagination triggers at N-3 (test the pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` function — the View only forwards geometry from `onScrollGeometryChange`), no double-load, error states.
+**Behaviors to protect** (each test covers a product risk, not a generic QA requirement):
+
+- `PersistedUserStateStore` — round-trip, concurrent writes, debounce, survival across re-init.
+  *Risk covered: a mis-persisted seen or like = ring flipping back to "unseen" or heart emptying after relaunch. The most user-visible bug, and the only one the reviewer can reproduce by killing the app.*
+- `LocalStoryRepository` — page count, ID uniqueness across pages, deterministic output, JSON parse.
+  *Risk covered: two items sharing an ID = corrupted persistence (one item's seen state overwrites another). Non-deterministic output = flaky snapshot tests and broken cross-session stability.*
+- `PlaybackController` — tick advance, pause/resume preserves progress, restart on item change resets to 0, scenePhase pause halts ticks and resumes from same offset.
+  *Risk covered: timer drifting in background = items marked seen the user never saw. Missed reset = progress bar starts mid-bar on the next item.*
+- `ViewerStateModel` — all state transitions (next/prev item, next/prev user, dismiss on end), seen marking fires only after 1.5s OR on explicit next-tap, optimistic like flips state before persistence completes.
+  *Risk covered: the ring lying (seen shown when nothing was viewed, cf. 1.5s rule) and likes feeling "laggy" because they wait on persistence. The two behaviors the reviewer will specifically try to break.*
+- `StoryListViewModel` — pagination triggers at N-3 (test the pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` function — the View only forwards geometry from `onScrollGeometryChange`), no double-load, error states.
+  *Risk covered: double-load = duplicated pages in the list (and ID collisions in the store). Late trigger = scroll hits the end before the next page arrives.*
 
 **Not tested** (mention in README):
 - Pure View layouts (covered by snapshots).
@@ -80,7 +86,13 @@ One end-to-end VM scenario: load list → open user 3 → view 2 items → dismi
 
 ### Coverage target
 
-Aim for ~80% on Domain + ViewModels. View code is intentionally uncovered.
+Aim for **~80% on the Domain + ViewModels targets only**, not on the app overall. View code is intentionally uncovered (see snapshots).
+
+**Why not 100%** — Views, the Nuke wrapper, and animation timings are out of scope by design (see "Not tested" above). Measuring coverage on the whole app dilutes the number artificially and hides what actually matters.
+
+**Why 80% and not 60% or 95%** — 80% is the threshold past which every critical business branch is covered: viewer state transitions, the 1.5s rule, playback pause/resume, the N-3 pagination trigger, the persistence round-trip. The remaining 20% is glue code (inits, `Sendable` conformances, trivial DTO-to-domain mappers) where a test would only re-assert what the type system already enforces — explicitly forbidden under "What NOT to do". Pushing to 95% forces those useless tests; staying at 60% lets an uncovered state transition slip through.
+
+**How it's measured** — Xcode coverage enabled on the `Domain` and `ViewModels` target schemes. The number is reported per-target in the README, not as a single app-wide figure.
 
 ### Test doubles
 

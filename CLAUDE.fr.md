@@ -44,12 +44,18 @@ Les tests unitaires et d'intégration utilisent **Swift Testing**, pas XCTest. S
 
 Choisir XCTest en 2026 sur un projet Swift 6 strict ferait passer un signal "template pas mis à jour" en revue senior, au même titre que cibler iOS 17.
 
-**Doivent être testés** :
-- `PersistedUserStateStore` : round-trip, écritures concurrentes, debounce, survie aux re-init.
-- `LocalStoryRepository` : nombre de pages, unicité des IDs entre pages, sortie déterministe, parsing JSON.
-- `PlaybackController` : avance des ticks, pause/resume préserve la progression, restart sur changement d'item reset à 0, scenePhase pause stoppe les ticks et reprend depuis le même offset.
-- `ViewerStateModel` : toutes les transitions d'état (next/prev item, next/prev user, dismiss en fin), le marquage seen ne se déclenche qu'après 1.5s OU sur next-tap explicite, le like optimiste flippe l'état avant la fin de la persistence.
-- `StoryListViewModel` : la pagination se déclenche à N-3 (tester la fonction pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` — la View ne fait que forwarder la géométrie depuis `onScrollGeometryChange`), pas de double-load, états d'erreur.
+**Comportements à protéger** (chaque test couvre un risque produit, pas une exigence QA générique) :
+
+- `PersistedUserStateStore` — round-trip, écritures concurrentes, debounce, survie aux re-init.
+  *Risque couvert : un seen ou un like mal persisté = ring qui re-passe à "unseen" ou cœur qui se vide après relance. C'est le bug le plus visible côté utilisateur, et le seul que l'évaluateur peut reproduire en tuant l'app.*
+- `LocalStoryRepository` — nombre de pages, unicité des IDs entre pages, sortie déterministe, parsing JSON.
+  *Risque couvert : deux items avec le même ID = persistence corrompue (l'état seen d'un item écrase un autre). Sortie non-déterministe = tests snapshot flaky et stabilité inter-sessions cassée.*
+- `PlaybackController` — avance des ticks, pause/resume préserve la progression, restart sur changement d'item reset à 0, scenePhase pause stoppe les ticks et reprend depuis le même offset.
+  *Risque couvert : timer qui dérive en background = items marqués seen sans que l'utilisateur les ait vus. Reset manqué = barre de progression qui démarre au milieu sur l'item suivant.*
+- `ViewerStateModel` — toutes les transitions d'état (next/prev item, next/prev user, dismiss en fin), le marquage seen ne se déclenche qu'après 1.5s OU sur next-tap explicite, le like optimiste flippe l'état avant la fin de la persistence.
+  *Risque couvert : le ring qui ment (seen affiché alors que rien n'a été vu, cf. règle 1.5s) et le like qui paraît "lent" parce qu'il attend la persistence. Ce sont les deux comportements que l'évaluateur va spécifiquement chercher à casser.*
+- `StoryListViewModel` — la pagination se déclenche à N-3 (tester la fonction pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` — la View ne fait que forwarder la géométrie depuis `onScrollGeometryChange`), pas de double-load, états d'erreur.
+  *Risque couvert : double-load = pages dupliquées dans la liste (et IDs en collision côté store). Trigger trop tardif = scroll qui bute sur la fin avant l'arrivée de la page suivante.*
 
 **Non testé** (mentionné dans le README) :
 - Pure View layouts (couvert par les snapshots).
@@ -80,7 +86,13 @@ Un scénario VM end-to-end : charger la liste → ouvrir le user 3 → voir 2 it
 
 ### Cible de couverture
 
-Viser ~80% sur Domain + ViewModels. Le code de View est intentionnellement non couvert.
+Viser **~80% sur les targets Domain + ViewModels uniquement**, pas sur l'app globale. Le code de View est intentionnellement non couvert (cf. snapshots).
+
+**Pourquoi pas 100%** — Views, wrapper Nuke et timings d'animation sont hors scope par décision (voir "Non testé" plus haut). Mesurer la couverture sur l'app entière dilue le chiffre artificiellement et masque ce qui compte vraiment.
+
+**Pourquoi 80% et pas 60% ou 95%** — 80% est le seuil au-delà duquel toutes les branches métier critiques sont couvertes : transitions d'état du viewer, règle des 1.5s, pause/resume du playback, déclenchement N-3 de la pagination, round-trip de persistence. Les 20% restants sont du glue code (inits, conformances `Sendable`, mappers triviaux entre DTO et domain) où un test ne ferait que ré-asserter ce que le système de types impose déjà — explicitement interdit par la section "Ce qu'il NE faut PAS faire". Pousser à 95% force à écrire ces tests inutiles ; rester à 60% laisse passer une transition d'état non couverte.
+
+**Comment c'est mesuré** — couverture Xcode activée sur les schemes des targets `Domain` et `ViewModels`. Le chiffre est calculé par target et reporté dans le README, pas un chiffre global app-wide.
 
 ### Test doubles
 
