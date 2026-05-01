@@ -150,6 +150,51 @@ Référence dans l'écosystème iOS pour les snapshots. Permet de figer l'appare
 
 `swift-snapshot-testing` est au test target uniquement — aucune surface de production n'en dépend, donc le risque "lib abandonnée" est nul: au pire on freeze la version, les tests continuent de tourner.
 
+## Choix de persistence
+
+> **TL;DR** — `actor` + `Codable` JSON via `FileManager`, dans `Application Support/`. Pas de SwiftData, pas d'`UserDefaults` pour l'état, pas de Core Data.
+
+### Ce qu'on persiste, exactement
+
+```swift
+struct UserState: Codable, Sendable {
+    var seenItemIDs: Set<String>     // ~quelques centaines de strings max
+    var likedItemIDs: Set<String>    // idem
+}
+```
+
+**Deux `Set<String>`**, taille mesurée en kilooctets, pas de relations, pas de requêtes, pas de tri, pas de filtrage. La seule opération coûteuse est "écrire sans race condition". Ce constat est décisif: c'est un cas où **n'importe quel outil sur-dimensionné devient un coût net**.
+
+### La solution choisie
+
+Quatre primitives Foundation suffisent:
+
+| Préoccupation | Outil | Mécanisme |
+|---|---|---|
+| Concurrence (list + viewer écrivent en parallèle) | `actor` | Sérialisation par construction du langage — pas de `NSLock`, pas de queue à maintenir |
+| Sérialisation | `Codable` + `JSONEncoder` | Trois lignes, lisible à la main, diffable, migration via `init(from decoder:)` standard |
+| Atomicité | `Data.write(to:options: [.atomic])` | Écrit dans un temp + rename atomique. Process tué pendant le write = ancien fichier intact, jamais corrompu |
+| Emplacement | `Application Support/` | État privé app, persistant, exclu d'iCloud Document. Pas `Documents/` (visible Files.app), pas `Caches/` (purgeable OS) |
+
+Résultat: ~80 lignes de code, zéro dépendance ajoutée, testable avec un `tmpDir` jetable, alignée avec le modèle d'`actor`s du reste du projet.
+
+### Alternatives écartées
+
+| Option | Verdict | Raison |
+|---|---|---|
+| **SwiftData** | ❌ | C'est un ORM. Pour `Set<String>`, il faut soit un `@Model class UserStateRecord` artificiel, soit un `@Model class UserState` avec relations vers un `@Model class Item` qu'on n'a pas — on **introduit un modèle de données là où il n'y en a pas**. Pire, `ModelContext` n'est pas `Sendable`: pour rester compatible avec nos repositories `actor`, il faudrait un `ModelActor` par-dessus, soit une double couche d'isolation pour le même problème. Et SwiftData a un historique documenté de bugs de threading sous Swift 6 strict (saves perdus, contextes désynchronisés). Coût élevé, gain nul, risque réel. |
+| **`UserDefaults`** | ❌ | Thread-safe sur les accès individuels mais pas sur les séquences read-modify-write (`array → modify → set` depuis deux threads = écritures perdues silencieusement). Pas d'atomicité fichier sur le `.plist` interne. `Set<String>` n'est pas un type natif (bricolage `[String]` à chaque accès). Et sémantiquement, `UserDefaults` est *préférences utilisateur* — y stocker "quelles stories ont été vues" est un abus qu'un reviewer va souligner. |
+| **Core Data** | ❌ | En 2026, sur un nouveau projet, aucune justification: SwiftData le supplante pour les nouveaux modèles, et tous les arguments anti-SwiftData s'appliquent en pire (API Obj-C sous-jacente, plus de boilerplate, threading encore plus capricieux). Mentionné dans CLAUDE.md uniquement pour fermer la porte explicitement. |
+| **Fichier custom binaire / SQLite à la main** | ❌ | Travail non-trivial pour une donnée qui n'a ni schéma ni requêtes. JSON est lisible, debuggable, et la perf n'est pas un facteur à <1KB. |
+
+### Trade-off explicite assumé
+
+**Debounce 500ms** sur les écritures disque (`PersistedUserStateStore` coalesce les bursts). Conséquence: en cas de crash hard pendant la fenêtre de debounce, on perd au pire 500ms d'état. Borné, documenté, acceptable pour une feature où "j'ai marqué cette story seen il y a 200ms" n'est pas critique. Forçage explicite via `flushNow()` sur passage en background et sur dismiss du viewer — voir `architecture.md` § *Persistence design*.
+
+### Pourquoi c'est aussi un signal de jugement
+
+Choisir SwiftData pour `Set<String>` × 2 est un anti-pattern reconnaissable: "j'utilise l'outil le plus récent parce qu'il est le plus récent". Choisir `actor` + Codable JSON et **savoir expliquer pourquoi pas SwiftData** est le signal inverse — dimensionnement adapté à la donnée, démonstration directe d'un store concurrent thread-safe écrit avec les primitives modernes du langage, plus impressionnant en review qu'un `@Model class` qui cache la complexité réelle derrière un framework.
+
 ## Comportement produit
 
 - Le contenu d'un user est **stable entre les sessions** (mêmes images pour le même user) via `picsum.photos/seed/{stableSeed}`.
