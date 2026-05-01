@@ -95,6 +95,11 @@ Like icon               28pt
 Close icon              24pt
 Touch target minimum    44pt   // Apple HIG, never below
 
+// Skeleton (loading) placeholders
+Skeleton label width    32pt   // username placeholder rect — same horizontal footprint as a 5-char username
+Skeleton label height    8pt   // matches Spacing.s; visually reads as "text not yet here"
+Skeleton glyph size     28pt   // SF Symbol size for tray failure state, centred in the 64pt ring slot
+
 // Corner radii
 Cards                   12pt
 Avatars                 full (geometry-based)
@@ -137,11 +142,14 @@ Motion reveals quality. The reviewer will feel these even unconsciously.
 All durations route through named tokens. No hardcoded `0.2`/`0.3`/`0.4` in views. This buys two things: a coherent feel across components, and a one-line override for `accessibilityReduceMotion` (collapse all three to `0` and set transitions to `.identity`).
 
 ```
-Motion.fast      = 0.2s   // micro-feedback: pause overlay fade, tap state
-Motion.standard  = 0.3s   // primary affordances: like spring, header fade
-Motion.slow      = 0.4s   // ring state crossfade, dismiss
-Motion.itemPlay  = 5.0s   // single item duration (progress bar fill)
+Motion.fast            = 0.2s   // micro-feedback: pause overlay fade, tap state
+Motion.standard        = 0.3s   // primary affordances: like spring, header fade
+Motion.slow            = 0.4s   // ring state crossfade, dismiss
+Motion.itemPlay        = 5.0s   // single item duration (progress bar fill)
+Motion.skeletonPulse   = 1.2s   // one full opacity cycle of the skeleton tray (loading)
 ```
+
+`itemPlay` and `skeletonPulse` are listed alongside the one-shot transition tokens deliberately: the same enum/extension is the single source of truth for any duration in the codebase. Splitting them into a separate "cyclic" enum would make the reduced-motion override (collapse-to-zero) two-place rather than one-place.
 
 Implementation: extension `Animation` (or a `Motion` enum returning `Animation`) with named static properties. Always reference tokens from views, never literal seconds.
 
@@ -297,8 +305,8 @@ In practice the hydration completes in <50ms, so the view exists for correctness
 When `StoryListViewModel.pages` is empty and `isLoading == true`, render a **skeleton tray**:
 
 - 8 `StoryTrayItem` instances in `.loading` state in the `HStack`
-- Each shows a pulsing ring (the existing `Ring loading` token) + a `Surface elevated` circle in place of the avatar + a 32pt × 8pt rounded `Text tertiary @ 30% opacity` rectangle in place of the username
-- The pulse animation cycles at `Motion.slow` (0.4s) on opacity 0.4 → 1.0 → 0.4 — `accessibilityReduceMotion` collapses to a static 70% opacity (no pulse)
+- Each shows a pulsing ring (the existing `Ring loading` token) + a `Surface elevated` circle in place of the avatar + a `Skeleton label width × Skeleton label height` rounded `Text tertiary @ 30% opacity` rectangle in place of the username
+- The pulse animation cycles at `Motion.skeletonPulse` (1.2s for a full 0.4 → 1.0 → 0.4 opacity round-trip) — `accessibilityReduceMotion` collapses to a static 70% opacity (no pulse)
 - No global spinner above the tray — the skeleton **is** the indicator
 
 Skeleton beats spinner here because the user sees the *shape* of what is arriving (a horizontal carousel of stories), so the transition to loaded content is a content swap, not a screen replacement.
@@ -313,7 +321,7 @@ The N-3 trigger means in practice the user rarely reaches the end before the nex
 
 When `loadPage(currentPage + 1)` throws and `isLoadingMore` flips back to `false`, the trailing skeleton transitions to `StoryTrayItem(.failed(retry:))`:
 
-- Ring replaced by an SF Symbol `exclamationmark.triangle` glyph in `Text tertiary`
+- Ring replaced by an SF Symbol `exclamationmark.triangle` glyph at `Skeleton glyph size` (28pt), centred in the 64pt avatar slot, tinted `Text tertiary`
 - Username replaced by the word "Retry" in `Text secondary`
 - Tap calls `viewModel.loadMoreIfNeeded()` — same path as the auto-trigger, so success collapses the failed item to a fresh page silently
 - No haptic, no toast, no alert — consistent with the rest of the product's error chrome

@@ -95,6 +95,11 @@ Like icon               28pt
 Close icon              24pt
 Touch target minimum    44pt   // Apple HIG, jamais en dessous
 
+// Skeleton (loading) placeholders
+Skeleton label width    32pt   // rect placeholder du username — même empreinte horizontale qu'un username de 5 chars
+Skeleton label height    8pt   // matche Spacing.s ; lit visuellement comme "le texte n'est pas encore là"
+Skeleton glyph size     28pt   // taille du SF Symbol pour l'état failed du tray, centré dans la slot ring 64pt
+
 // Corner radii
 Cards                   12pt
 Avatars                 plein (basé sur la géométrie)
@@ -137,11 +142,14 @@ Le motion révèle la qualité. Le reviewer le ressentira même inconsciemment.
 Toutes les durées passent par des tokens nommés. Pas de `0.2`/`0.3`/`0.4` hardcodés dans les views. Cela achète deux choses : un feel cohérent entre composants, et un override d'une seule ligne pour `accessibilityReduceMotion` (faire collapser les trois à `0` et passer les transitions à `.identity`).
 
 ```
-Motion.fast      = 0.2s   // micro-feedback : fade overlay pause, état tap
-Motion.standard  = 0.3s   // affordances primaires : spring du like, fade header
-Motion.slow      = 0.4s   // crossfade d'état du ring, dismiss
-Motion.itemPlay  = 5.0s   // durée d'un item (remplissage progress bar)
+Motion.fast            = 0.2s   // micro-feedback : fade overlay pause, état tap
+Motion.standard        = 0.3s   // affordances primaires : spring du like, fade header
+Motion.slow            = 0.4s   // crossfade d'état du ring, dismiss
+Motion.itemPlay        = 5.0s   // durée d'un item (remplissage progress bar)
+Motion.skeletonPulse   = 1.2s   // un cycle complet d'opacité du tray skeleton (loading)
 ```
+
+`itemPlay` et `skeletonPulse` sont listés à côté des tokens de transition one-shot délibérément : le même enum/extension est la source de vérité unique pour n'importe quelle durée dans le codebase. Les éclater dans un enum "cyclique" séparé rendrait l'override reduced-motion (collapse-to-zero) à deux endroits au lieu d'un.
 
 Implémentation : extension `Animation` (ou un enum `Motion` retournant `Animation`) avec des propriétés statiques nommées. Toujours référencer les tokens depuis les views, jamais des secondes en littéral.
 
@@ -297,8 +305,8 @@ En pratique, l'hydration se termine en <50ms, donc la view existe pour la correc
 Quand `StoryListViewModel.pages` est vide et `isLoading == true`, rendre un **tray skeleton** :
 
 - 8 instances `StoryTrayItem` en état `.loading` dans le `HStack`
-- Chacune montre un ring qui pulse (token `Ring loading` existant) + un cercle `Surface elevated` à la place de l'avatar + un rectangle 32pt × 8pt arrondi en `Text tertiary @ 30% opacity` à la place du username
-- L'animation pulse cycle à `Motion.slow` (0.4s) sur opacity 0.4 → 1.0 → 0.4 — `accessibilityReduceMotion` collapse à 70% d'opacité statique (pas de pulse)
+- Chacune montre un ring qui pulse (token `Ring loading` existant) + un cercle `Surface elevated` à la place de l'avatar + un rectangle `Skeleton label width × Skeleton label height` arrondi en `Text tertiary @ 30% opacity` à la place du username
+- L'animation pulse cycle à `Motion.skeletonPulse` (1.2s pour un round-trip complet 0.4 → 1.0 → 0.4 d'opacité) — `accessibilityReduceMotion` collapse à 70% d'opacité statique (pas de pulse)
 - Pas de spinner global au-dessus du tray — le skeleton **est** l'indicateur
 
 Le skeleton bat le spinner ici parce que l'utilisateur voit la *forme* de ce qui arrive (un carrousel horizontal de stories), donc la transition vers le contenu chargé est un swap de contenu, pas un remplacement d'écran.
@@ -313,7 +321,7 @@ Le trigger N-3 fait qu'en pratique l'utilisateur atteint rarement la fin avant q
 
 Quand `loadPage(currentPage + 1)` throw et que `isLoadingMore` repasse à `false`, le skeleton trailing transitionne en `StoryTrayItem(.failed(retry:))` :
 
-- Ring remplacé par un glyphe SF Symbol `exclamationmark.triangle` en `Text tertiary`
+- Ring remplacé par un glyphe SF Symbol `exclamationmark.triangle` à `Skeleton glyph size` (28pt), centré dans la slot avatar 64pt, teinté `Text tertiary`
 - Username remplacé par le mot "Retry" en `Text secondary`
 - Tap appelle `viewModel.loadMoreIfNeeded()` — même chemin que l'auto-trigger, donc le succès collapse l'item failed en page fraîche silencieusement
 - Pas d'haptique, pas de toast, pas d'alerte — cohérent avec le reste du chrome d'erreur du produit
