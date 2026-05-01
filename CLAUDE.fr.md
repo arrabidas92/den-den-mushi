@@ -54,6 +54,8 @@ Choisir XCTest en 2026 sur un projet Swift 6 strict ferait passer un signal "tem
   *Risque couvert : timer qui dérive en background = items marqués seen sans que l'utilisateur les ait vus. Reset manqué = barre de progression qui démarre au milieu sur l'item suivant.*
 - `ViewerStateModel` — toutes les transitions d'état (next/prev item, next/prev user, dismiss en fin), le marquage seen ne se déclenche qu'après 1.5s OU sur next-tap explicite, le like optimiste flippe l'état avant la fin de la persistence.
   *Risque couvert : le ring qui ment (seen affiché alors que rien n'a été vu, cf. règle 1.5s) et le like qui paraît "lent" parce qu'il attend la persistence. Ce sont les deux comportements que l'évaluateur va spécifiquement chercher à casser.*
+- `ViewerStateModel` (surface gestes) — `shouldCommitDismiss(translationY:velocityY:containerHeight:)` retourne true au-delà des seuils 30% / 800pt·s⁻¹ et false en deçà ; `updateDrag` met le playback en pause à la première translation non nulle et le snap-back le reprend ; `doubleTapLike` est idempotent (un item déjà liké le reste, le second pop se déclenche quand même) ; `beginImmersive`/`endImmersive` togglent `isImmersive` et pause/resume le playback en lockstep ; `pendingHeartPop` est nettoyé par le clock injecté après la fenêtre d'animation pour que deux double-taps consécutifs produisent des overlays distincts.
+  *Risque couvert : un swipe-down qui commit alors que l'utilisateur voulait juste jeter un œil (ou pire, qui ne commit pas alors qu'il voulait dismiss) — les deux se ressentent comme cassés. Un double-tap qui un-like est le foot-gun que la spec évite explicitement. Long-press qui désynchronise du playback (chrome caché mais timer qui tourne, ou inverse) marque seen des items que l'utilisateur n'a pas vus. `pendingHeartPop` resté en place avale le second tap d'un double-double rapide.*
 - `StoryListViewModel` — la pagination se déclenche à N-3 (tester la fonction pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` — la View ne fait que forwarder la géométrie depuis `onScrollGeometryChange`), pas de double-load, états d'erreur.
   *Risque couvert : double-load = pages dupliquées dans la liste (et IDs en collision côté store). Trigger trop tardif = scroll qui bute sur la fin avant l'arrivée de la page suivante.*
 
@@ -101,15 +103,15 @@ Fakes écrits à la main (`FakeStoryRepository`, `InMemoryUserStateStore`) dans 
 ## Polish explicitement skippé (documenté dans le README)
 
 Échangé contre la couverture de tests :
-- Dismiss interactif au swipe-down (le swipe binaire suffit)
-- Transition custom entre users (transition page par défaut utilisée)
-- Long-press cache toute l'UI (pause uniquement)
-- Animation cœur qui pop sur double-tap
 - Champ footer "Send message"
 - Crossfade sur la transition seen du ring (swap instantané est suffisant et un test de moins à maintenir)
 
 Conservé (faible coût, gain de qualité perçue élevé) :
 - **Zoom transition tray avatar → viewer header** via `.matchedTransitionSource(id:in:)` + `.navigationTransition(.zoom(sourceID:in:))` (iOS 18 natif). La transition que les reviewers ressentent le plus. L'API native remplace le workaround `matchedGeometryEffect` d'iOS 17 — moins d'artefacts au dismiss, moins de code custom, et c'est la même primitive que Photos.app utilise.
+- Dismiss interactif au swipe-down (drag-to-dismiss avec rubber-banding et fade progressif, pas juste un trigger binaire)
+- Transition custom entre users (au-delà de la transition page par défaut)
+- Long-press cache toute l'UI (la chrome fade out, pas juste pause du playback)
+- Animation cœur qui pop sur double-tap
 - Pause sur ScenePhase
 - Préchargement d'images via Nuke prefetch
 - Support reduced-motion (faire de l'auto-advance sans le respecter est rédhibitoire à un niveau senior ; ~30 min via les tokens `Motion` de `design.md`)

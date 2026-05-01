@@ -170,7 +170,8 @@ final class PlaybackController {
 ```
 
 ```swift
-// ViewerStateModel — possède la navigation, le seen, le like, le dismiss.
+// ViewerStateModel — possède la navigation, le seen, le like, le dismiss,
+// et l'état transient des gestes (immersive, drag offset, heart pop).
 // Pilote PlaybackController ; réagit à son `onItemEnd` pour avancer.
 @MainActor
 @Observable
@@ -180,12 +181,19 @@ final class ViewerStateModel {
     private(set) var isLiked = false
     private(set) var shouldDismiss = false
 
+    // État transient piloté par les gestes (la View bind là-dessus ; pure data, pas de types SwiftUI)
+    private(set) var isImmersive = false              // chrome-hide du long-press
+    private(set) var dragOffset: CGFloat = 0          // translation du swipe-down
+    private(set) var dragProgress: Double = 0         // 0...1 progression du dismiss
+    private(set) var pendingHeartPop: HeartPop?       // overlay double-tap ; nettoyé par tâche clock
+
     let playback: PlaybackController
 
     private let users: [Story]
     private let stateStore: any UserStateRepository
     private let clock: any Clock<Duration>
     private var seenMarkTask: Task<Void, Never>?
+    private var heartPopClearTask: Task<Void, Never>?
 
     init(
         users: [Story],
@@ -197,13 +205,30 @@ final class ViewerStateModel {
         // construit playback s'il n'est pas injecté ; câble onItemEnd à nextItem()
     }
 
-    func toggleLike()       { ... }       // update optimiste
+    func toggleLike()       { ... }       // update optimiste (bouton du footer)
+    func doubleTapLike(at point: CGPoint) { ... }  // passe isLiked = true (idempotent), schedule pendingHeartPop
     func nextItem()         { ... }       // tap-forward explicite marque aussi seen maintenant
     func previousItem()     { ... }
     func nextUser()         { ... }
     func previousUser()     { ... }
     func dismiss()          { shouldDismiss = true }
     func onItemDidStart()   { ... }       // schedule seenMarkTask après 1.5s
+
+    // Immersive (long-press)
+    func beginImmersive()   { isImmersive = true; playback.pause() }
+    func endImmersive()     { isImmersive = false; playback.resume() }
+
+    // Swipe-down dismiss (drag-driven)
+    func updateDrag(translationY: CGFloat, containerHeight: CGFloat)  { ... }
+    func endDrag(translationY: CGFloat, velocityY: CGFloat, containerHeight: CGFloat) { ... }
+
+    // Prédicat pur, unit-testable sans une View (miroir de shouldLoadMore)
+    func shouldCommitDismiss(translationY: CGFloat, velocityY: CGFloat, containerHeight: CGFloat) -> Bool { ... }
+}
+
+struct HeartPop: Sendable, Equatable {
+    let id: UUID
+    let location: CGPoint
 }
 ```
 
@@ -505,7 +530,7 @@ La View est la seule couche qui connaît `scenePhase`, et elle pilote `playback`
 `StoryListViewModel` et `ViewerStateModel` possèdent chacun un `ImagePrefetchHandle` (défini dans *Chargement d'images*) pour la durée de vie de l'écran et pilotent le prefetch sur les changements d'état :
 
 - **List** : quand une page charge, prefetch les URLs d'avatars de la page plus la *première* image de l'item story de chaque user.
-- **Viewer** : quand le user courant change (swipe TabView), prefetch l'URL du premier item story du user suivant. Quand `currentItemIndex` avance dans un user, prefetch l'URL de l'item suivant.
+- **Viewer** : quand le user courant change (swipe horizontal dans le `HStack` paginé), prefetch l'URL du premier item story du user suivant. Quand `currentItemIndex` avance dans un user, prefetch l'URL de l'item suivant.
 
 ```swift
 // Inside ViewerStateModel
@@ -539,14 +564,14 @@ Récupération sur corruption : si `JSONDecoder` throw à l'init, le store log `
 ```
 NavigationView                        ← non utilisé
 .fullScreenCover(isPresented:)        ← utilisé pour le viewer
-TabView avec .tabViewStyle(.page)     ← utilisé dans le viewer pour la pagination user
+HStack paginé + offset (custom)       ← utilisé dans le viewer pour la pagination user
 .matchedTransitionSource +            ← utilisé pour la zoom transition
 .navigationTransition(.zoom)             tray-avatar → viewer-header (iOS 18)
 ```
 
 Rationale :
 - Le viewer est une expérience modale, pas une destination navigable. `.fullScreenCover` matche le comportement d'Instagram (slide up, bloque la navigation, dismiss au geste).
-- TabView avec page style est la façon la plus simple et correcte de swiper entre users. Un UIPageViewController custom est inutile à cette échelle.
+- La pagination user est un `HStack` paginé hand-rolled + `offset` piloté par un `DragGesture`, **pas** `TabView(.page)`. La transition custom (parallax + scale + opacity, voir `design.md` § *Animations spécifiques → Swipe entre users*) n'est pas exprimable via le page style de `TabView`, et le geste doit rester interruptible en plein vol quand l'utilisateur inverse la direction — `TabView` snap à la page la plus proche au release et ignore le drag en cours. L'implémentation tient en ~80 lignes de `GeometryReader` + arithmétique d'offset et est unit-testable via le même modèle d'état drag que le swipe-down dismiss.
 
 ### Zoom transition tray-avatar → viewer
 
@@ -599,7 +624,34 @@ struct ViewerTapZones: View {
 
 Les zones vivent au-dessus de l'image et en dessous de l'UI interactive (bouton close du header, bouton like) en utilisant le z-order SwiftUI. Elles sont cachées de VoiceOver en tant que boutons (pas en tant que zones de tap) pour que les utilisateurs de screen reader aient des affordances explicites.
 
-Le long-press est un `LongPressGesture(minimumDuration: 0.2)` séparé attaché à la page ; le swipe horizontal est géré par le `TabView` parent ; le swipe-down dismiss vertical est un `DragGesture` sur la page avec le seuil de `design.md`.
+### Long-press (chrome hide + pause)
+
+`LongPressGesture(minimumDuration: 0.2)` attaché à la page. Sur `onChanged`/`onEnded` la View bascule `state.isImmersive` (un flag `@MainActor` sur `ViewerStateModel`) ; le header, le footer, la progress bar et les affordances des zones de tap sont rendus conditionnellement avec une transition d'opacité via `Motion.fast`. L'image reste à pleine opacité tout du long — seule la chrome se cache.
+
+Résolution de conflit du long-press : un long-press qui détecte une translation > 8pt dans n'importe quelle direction pendant sa fenêtre de grâce est annulé et le touch est routé vers le `DragGesture` environnant (user-swipe horizontal ou dismiss vertical). C'est câblé via `simultaneousGesture` + `exclusively(before:)` pour qu'un swipe qui commence comme une pression lente ne bloque jamais l'utilisateur du dismiss. `ViewerStateModel.beginImmersive()` / `endImmersive()` sont les deux intents que la View appelle ; les deux pilotent aussi `playback.pause()` / `playback.resume()`.
+
+### Double-tap like (heart pop)
+
+`TapGesture(count: 2)` vit sur la zone des deux tiers droits aux côtés du handler single-tap "next". L'arbitrage de gestes SwiftUI ne déclenche le single-tap que si le double-tap échoue à matcher — donc les deux ne se collisionnent jamais et il n'y a pas de délai perceptible sur le single-tap (le système utilise la fenêtre double-tap de la plateforme, ~0.25s).
+
+Le double-tap dispatche `state.doubleTapLike(at: CGPoint)` ; le ViewModel expose `pendingHeartPop: HeartPop?` (un value type `Sendable` portant la position du tap et un ID unique) que la View observe et rend en overlay. L'overlay anime selon la spec design (scale 0 → 1.4 → 1.0, fade in/out sur `Motion.standard`) et reset `pendingHeartPop` à `nil` à la fin via une `Task` schedulée sur le clock injecté — ce qui garde le cleanup déterministe et unit-testable.
+
+Important : le double-tap-like est **idempotent vers "liked"**, pas un toggle. Un deuxième double-tap sur un item déjà liké déclenche quand même le heart pop (pour que le geste reste toujours réactif) mais ne un-like pas. Le un-like n'est disponible que via le `LikeButton` du footer. Cela matche Instagram et évite le foot-gun "j'ai tapé deux fois rapidement et j'ai annulé mon like par accident".
+
+### Swipe-down dismiss vertical (interactif)
+
+Un `DragGesture(minimumDistance: 10)` sur la page pilote `state.dragOffset: CGFloat` et `state.dragProgress: Double` (0...1), mis à jour à chaque `onChanged`. La View bind :
+- Le `.scaleEffect` de l'image à `1.0 - dragProgress * 0.15`
+- Le `.opacity` du background du viewer à `1.0 - dragProgress`
+- Le playback est mis en pause au premier `onChanged` non nul et reprend uniquement au snap-back
+
+`onEnded` appelle `state.endDrag(translation:velocity:)` qui décide entre dismiss (commit, déclenche `shouldDismiss = true`) et snap-back (reset `dragOffset` avec les tokens spring de `design.md`). Les deux branches utilisent `withAnimation(Motion.standard)` depuis la View ; le ViewModel ne mute que de l'état brut.
+
+Ce découpage garde la logique de seuil (translation > 30% du container OU velocity > 800pt/s) dans `ViewerStateModel` comme une fonction pure `func shouldCommitDismiss(translationY:velocityY:containerHeight:) -> Bool`, unit-testable sans une View — même pattern que `StoryListViewModel.shouldLoadMore`.
+
+### Swipe horizontal entre users
+
+Le `HStack` paginé custom dans le viewer (voir *Navigation*) attache son propre `DragGesture` pour le user-swipe. Désambiguation horizontal-vs-vertical : un drag est verrouillé sur son axe après les premiers 12pt de translation en comparant `|translation.x|` à `|translation.y|` — le plus grand axe gagne, le handler de geste ignore le mouvement sur l'autre axe jusqu'au release. Cela empêche un drag presque diagonal de déclencher à la fois un user-swipe et un dismiss.
 
 ### UI d'échec image
 
@@ -707,6 +759,10 @@ Résultat : les snapshot tests sont hermétiques, déterministes, et tournent en
 | Deployment target | iOS 18 | iOS 17 | Débloque `.navigationTransition(.zoom)` (la transition phare du produit), `onScrollGeometryChange` (trigger de pagination testable), et les simplifications d'isolation de View Swift 6. Le coût est négligeable 20 mois après la sortie. |
 | Trigger de pagination | `onScrollGeometryChange` → prédicat VM pur | sentinelle `onAppear` / `GeometryReader` + `PreferenceKey` | La décision sort de la View dans une fonction unit-testable ; matche la règle "pas de logique métier dans les Views" sur ce chemin de code |
 | Transition tray → viewer | `.navigationTransition(.zoom)` | `matchedGeometryEffect` à travers `.fullScreenCover` | API native, pas de flicker au dismiss, dismiss interactif natif, ~30-50 lignes en moins |
+| Pagination user dans le viewer | `HStack` paginé hand-rolled + `DragGesture` | `TabView(.page)` | La transition custom parallax+scale n'est pas exprimable avec le page style de `TabView` ; le geste doit rester interruptible en plein vol au moment d'une inversion de direction |
+| Swipe-down dismiss | Drag interactif (translation + velocity, rubber-banded, scale + opacity) | Swipe binaire avec seuil | Le reviewer ressent le geste plutôt qu'un déclencheur one-shot ; la logique de seuil reste fonction pure et unit-testable |
+| Comportement long-press | Pause + chrome hide (header/footer/progress qui fadent) | Pause uniquement | Matche Instagram ; laisse l'utilisateur s'attarder sur le frame ; la chrome est rendue conditionnellement, pas layout-conditionnellement, donc la géométrie reste stable |
+| Double-tap sur image | Heart pop overlay + like idempotent (pas de un-like) | Pas de double-tap ou toggle | Micro-interaction de qualité perçue élevée ; l'idempotence évite le foot-gun "j'ai tapé deux fois rapidement et j'ai perdu mon like" |
 | Persistence | actor + fichier JSON | SwiftData, UserDefaults | Thread-safe par construction, rapide, testable, bien dimensionné |
 | Pagination | recyclage local avec suffixes d'ID | mock réseau | Spec-conforme, pas de tests flaky |
 | Images | Nuke | AsyncImage, custom | Caching/prefetch de qualité production sans avoir à l'écrire |

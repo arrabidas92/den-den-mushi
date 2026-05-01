@@ -528,7 +528,7 @@ The View is the only layer that knows about `scenePhase`, and it drives `playbac
 `StoryListViewModel` and `ViewerStateModel` each own an `ImagePrefetchHandle` (defined in *Image loading*) for the lifetime of the screen and drive prefetch on state changes:
 
 - **List**: when a page loads, prefetch avatar URLs for the page plus the *first* image of each user's first story item.
-- **Viewer**: when the current user changes (TabView swipe), prefetch the next user's first story item URL. When `currentItemIndex` advances within a user, prefetch the next item's URL.
+- **Viewer**: when the current user changes (horizontal swipe through the paged `HStack`), prefetch the next user's first story item URL. When `currentItemIndex` advances within a user, prefetch the next item's URL.
 
 ```swift
 // Inside ViewerStateModel
