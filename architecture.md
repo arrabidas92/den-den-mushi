@@ -446,7 +446,11 @@ enum StoryError: Error, Sendable {
 Strategy:
 - **Repositories** throw `StoryError`. They never throw raw `DecodingError` or `CocoaError` to the upper layers.
 - **ViewModels** catch and translate into displayable state: a `loadingError: String?` (or a small enum for retryable vs fatal) consumed by the View. ViewModels never re-throw to the View.
-- **Views** render a discreet inline error (a 40pt red-tinted row at the bottom of the tray, or an X overlay in the viewer page) with a tap-to-retry. No alert dialogs — they break the immersive feel of Stories.
+- **Views** render a discreet inline error with tap-to-retry. Two surfaces, depending on where the error originated:
+  - **Pagination error** (failed `loadPage`) → the trailing tray slot becomes a `StoryTrayItem(.failed(retry:))` (warning glyph + "Retry" label, see `design.md` § *Loading & empty states*). Same width and height as a normal item, so the tray geometry never reflows.
+  - **List-level fatal error** (corrupt JSON, repository unavailable on first load, no `pages` to render) → full-screen empty-state under the (still visible) navigation chrome, with the same warning glyph and a single "Retry" button. This is the only case where the tray itself isn't rendered.
+  - **Viewer-level error** (image load failure on the current item) → see *Image-fail UI* below; handled inside the immersive chrome, never as a separate view.
+  No alert dialogs anywhere — they break the immersive feel of Stories.
 
 Logging uses `os.Logger`, one logger per subsystem:
 

@@ -258,10 +258,18 @@ Heart icon, 28pt. Unfilled white when not liked, filled #FF3B30 when liked. Trig
 ### `StoryTrayItem`
 
 ```swift
-StoryTrayItem(user: User, isFullySeen: Bool, density: TrayDensity = .regular, onTap: () -> Void)
+enum StoryTrayItemState {
+    case loaded(user: User, isFullySeen: Bool)
+    case loading                                  // skeleton: pulsing ring + Surface elevated avatar + greyed-out username placeholder
+    case failed(retry: () -> Void)                // tap to retry pagination
+}
+
+StoryTrayItem(state: StoryTrayItemState, density: TrayDensity = .regular, onTap: () -> Void = {})
 ```
 
 Composes `StoryAvatar` + username label. Truncates long usernames with `.lineLimit(1)` and `.truncationMode(.tail)`. The `density` only affects the parent `HStack` spacing inside the tray, not the item itself; passing it here keeps the prop colocated with the consumer.
+
+The three states share the exact same outer geometry (avatar diameter, ring gap, label height) — switching state must never reflow neighbouring items. Loading and failed states render no haptic. Failed state replaces the ring with a `Text tertiary` warning glyph and the username with the word "Retry"; a tap calls `retry`.
 
 ### `StoryViewerHeader`
 
@@ -270,6 +278,47 @@ StoryViewerHeader(user: User, timestamp: Date, onClose: () -> Void)
 ```
 
 Avatar (small, no ring) + username + relative timestamp + close button.
+
+## Loading & empty states
+
+Three places in the product can show "loading"; each has a defined treatment so they never collide visually.
+
+### 1. App bootstrap
+
+`StoriesTestApp` hydrates `StoryListViewModel` from a `.task` (the persisted state store init is `async throws`). While that runs, render `LoadingView`:
+
+- `Background` (`#000000`) full-screen
+- A 24pt white `ProgressView` centred — no logo, no copy, no fade
+
+In practice the hydration completes in <50ms, so the view exists for correctness, not as a designed surface. Keeping it minimal is intentional: a designed splash would flash visibly for ~3 frames and feel like a glitch.
+
+### 2. Initial tray load (page 0 not yet ready)
+
+When `StoryListViewModel.pages` is empty and `isLoading == true`, render a **skeleton tray**:
+
+- 8 `StoryTrayItem` instances in `.loading` state in the `HStack`
+- Each shows a pulsing ring (the existing `Ring loading` token) + a `Surface elevated` circle in place of the avatar + a 32pt × 8pt rounded `Text tertiary @ 30% opacity` rectangle in place of the username
+- The pulse animation cycles at `Motion.slow` (0.4s) on opacity 0.4 → 1.0 → 0.4 — `accessibilityReduceMotion` collapses to a static 70% opacity (no pulse)
+- No global spinner above the tray — the skeleton **is** the indicator
+
+Skeleton beats spinner here because the user sees the *shape* of what is arriving (a horizontal carousel of stories), so the transition to loaded content is a content swap, not a screen replacement.
+
+### 3. Pagination (page N+1 while scrolling)
+
+When `isLoadingMore == true`, append a single trailing `StoryTrayItem(.loading)` to the tray. It uses the same skeleton treatment as the initial load. Removed when the new page arrives.
+
+The N-3 trigger means in practice the user rarely reaches the end before the next page is appended; the trailing skeleton is only visible on slow networks. The trade-off (a) "no indicator" was rejected because of the pagination-failure edge case below: with no skeleton, a failed pagination silently leaves the user at the end of a tray that won't extend, with no signal of why.
+
+### 4. Pagination failure
+
+When `loadPage(currentPage + 1)` throws and `isLoadingMore` flips back to `false`, the trailing skeleton transitions to `StoryTrayItem(.failed(retry:))`:
+
+- Ring replaced by an SF Symbol `exclamationmark.triangle` glyph in `Text tertiary`
+- Username replaced by the word "Retry" in `Text secondary`
+- Tap calls `viewModel.loadMoreIfNeeded()` — same path as the auto-trigger, so success collapses the failed item to a fresh page silently
+- No haptic, no toast, no alert — consistent with the rest of the product's error chrome
+
+This is the only failure surface in the tray. List-level errors (corrupt JSON, repository unavailable) escalate to a full-screen empty-state with the same retry affordance, not an inline row.
 
 ## Preview discipline
 

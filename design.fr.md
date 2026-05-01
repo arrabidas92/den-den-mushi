@@ -258,10 +258,18 @@ Icône cœur, 28pt. Blanc non rempli quand non liké, rempli `#FF3B30` quand lik
 ### `StoryTrayItem`
 
 ```swift
-StoryTrayItem(user: User, isFullySeen: Bool, density: TrayDensity = .regular, onTap: () -> Void)
+enum StoryTrayItemState {
+    case loaded(user: User, isFullySeen: Bool)
+    case loading                                  // skeleton : ring qui pulse + avatar Surface elevated + placeholder username grisé
+    case failed(retry: () -> Void)                // tap pour retry la pagination
+}
+
+StoryTrayItem(state: StoryTrayItemState, density: TrayDensity = .regular, onTap: () -> Void = {})
 ```
 
 Compose `StoryAvatar` + label de username. Tronque les usernames longs avec `.lineLimit(1)` et `.truncationMode(.tail)`. La `density` n'affecte que le spacing du `HStack` parent dans le tray, pas l'item lui-même ; passer la prop ici la garde colocalisée avec son consommateur.
+
+Les trois états partagent exactement la même géométrie extérieure (diamètre d'avatar, gap du ring, hauteur du label) — changer d'état ne doit jamais reflow les items voisins. Les états loading et failed ne déclenchent aucun haptique. L'état failed remplace le ring par un glyphe d'avertissement `Text tertiary` et le username par le mot "Retry" ; un tap appelle `retry`.
 
 ### `StoryViewerHeader`
 
@@ -270,6 +278,47 @@ StoryViewerHeader(user: User, timestamp: Date, onClose: () -> Void)
 ```
 
 Avatar (petit, sans ring) + username + timestamp relatif + bouton de fermeture.
+
+## États de loading & d'empty
+
+Trois endroits dans le produit peuvent afficher un "loading" ; chacun a un traitement défini pour qu'ils ne se chevauchent jamais visuellement.
+
+### 1. Bootstrap de l'app
+
+`StoriesTestApp` hydrate `StoryListViewModel` depuis un `.task` (l'init du store d'état persisté est `async throws`). Pendant ce run, on rend `LoadingView` :
+
+- `Background` (`#000000`) plein écran
+- Un `ProgressView` blanc 24pt centré — pas de logo, pas de copy, pas de fade
+
+En pratique, l'hydration se termine en <50ms, donc la view existe pour la correction, pas comme une surface designée. La garder minimale est intentionnel : un splash designé flasherait visiblement pendant ~3 frames et donnerait l'impression d'un glitch.
+
+### 2. Loading initial du tray (page 0 pas encore prête)
+
+Quand `StoryListViewModel.pages` est vide et `isLoading == true`, rendre un **tray skeleton** :
+
+- 8 instances `StoryTrayItem` en état `.loading` dans le `HStack`
+- Chacune montre un ring qui pulse (token `Ring loading` existant) + un cercle `Surface elevated` à la place de l'avatar + un rectangle 32pt × 8pt arrondi en `Text tertiary @ 30% opacity` à la place du username
+- L'animation pulse cycle à `Motion.slow` (0.4s) sur opacity 0.4 → 1.0 → 0.4 — `accessibilityReduceMotion` collapse à 70% d'opacité statique (pas de pulse)
+- Pas de spinner global au-dessus du tray — le skeleton **est** l'indicateur
+
+Le skeleton bat le spinner ici parce que l'utilisateur voit la *forme* de ce qui arrive (un carrousel horizontal de stories), donc la transition vers le contenu chargé est un swap de contenu, pas un remplacement d'écran.
+
+### 3. Pagination (page N+1 pendant le scroll)
+
+Quand `isLoadingMore == true`, append un seul `StoryTrayItem(.loading)` trailing au tray. Il utilise le même traitement skeleton que le loading initial. Retiré quand la nouvelle page arrive.
+
+Le trigger N-3 fait qu'en pratique l'utilisateur atteint rarement la fin avant que la page suivante ne soit appendée ; le skeleton trailing n'est visible que sur réseau lent. Le trade-off (a) "pas d'indicateur" a été rejeté à cause de l'edge case d'échec de pagination ci-dessous : sans skeleton, une pagination en échec laisse l'utilisateur silencieusement à la fin d'un tray qui ne s'étendra pas, sans signal du pourquoi.
+
+### 4. Échec de pagination
+
+Quand `loadPage(currentPage + 1)` throw et que `isLoadingMore` repasse à `false`, le skeleton trailing transitionne en `StoryTrayItem(.failed(retry:))` :
+
+- Ring remplacé par un glyphe SF Symbol `exclamationmark.triangle` en `Text tertiary`
+- Username remplacé par le mot "Retry" en `Text secondary`
+- Tap appelle `viewModel.loadMoreIfNeeded()` — même chemin que l'auto-trigger, donc le succès collapse l'item failed en page fraîche silencieusement
+- Pas d'haptique, pas de toast, pas d'alerte — cohérent avec le reste du chrome d'erreur du produit
+
+C'est la seule surface d'échec dans le tray. Les erreurs au niveau liste (JSON corrompu, repository indisponible) escaladent vers un empty-state plein écran avec la même affordance retry, pas une row inline.
 
 ## Discipline des previews
 
