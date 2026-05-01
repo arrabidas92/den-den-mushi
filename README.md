@@ -99,9 +99,56 @@ Conservés (faible coût, gain de qualité perçue):
 
 ## Choix de dépendances
 
-**Nuke** (runtime) — Gère le fetch HTTP, le cache multi-niveaux (mémoire + disque), le prefetch et la décompression. Aucun de ces aspects n'est la feature évaluée. Réimplémenter cela à la main consommerait du temps mieux investi sur l'UX et les tests, pour un résultat de moindre qualité. `AsyncImage` ne dispose ni de cache disque, ni de prefetch, ni d'annulation fiable.
+Règle appliquée: **une dépendance se justifie si (1) elle résout un problème non-trivial, (2) ce problème n'est pas la feature évaluée, (3) la réimplémenter coûterait un budget temps qui ferait perdre plus de qualité ailleurs (UX, tests), (4) elle est mature et ne devient pas elle-même un risque.** Deux dépendances cochent les quatre. Toute autre demande devra être justifiée explicitement avant ajout.
 
-**swift-snapshot-testing** (test target uniquement) — Référence dans l'écosystème iOS pour les snapshots. Permet de figer l'apparence des composants et de détecter les régressions visuelles sans tooling maison.
+### Nuke (runtime)
+
+**Pourquoi le chargement d'images est non-trivial pour Stories.** Une feature Stories exige six choses que la moindre approche naïve manque:
+
+1. **Cache disque** — un retour sur la même story doit être instantané, sans re-download.
+2. **Prefetch** — l'item N+1 doit être décodé avant le tap forward, sinon flash de placeholder à chaque transition de 5s.
+3. **Annulation fiable** — sur swipe vers le user suivant, les téléchargements en cours pour le user courant doivent s'annuler immédiatement (sinon saturation bande passante).
+4. **Décompression hors main thread** — décoder un JPEG 1080×1920 sur le main thread = stutter visible. L'image doit arriver prête à dessiner.
+5. **Dédup de requêtes** — list et viewer peuvent demander la même URL en parallèle (avatar du tray + header du viewer). Une seule requête réseau, deux callbacks.
+6. **Memory cache + disk cache à deux niveaux** — memory pour la fluidité immédiate, disk pour la persistance entre sessions.
+
+**Alternatives écartées:**
+
+| Option | Verdict | Raison |
+|---|---|---|
+| `AsyncImage` (built-in) | ❌ | Pas de cache disque, pas de prefetch, annulation peu fiable, décompression sur main thread dans certaines configs. Acceptable pour un avatar isolé, inadapté à un viewer auto-advance. |
+| Kingfisher | ⚠️ Comparable | API plus orientée UIKit, `KFImage` moins idiomatique que `LazyImage`, annotations Sendable / Swift 6 historiquement à la traîne. Marche en 2026, mais le code SwiftUI + Swift 6 est plus propre avec Nuke. |
+| SDWebImage | ❌ | Lib Obj-C historique, header pollution, intégration Swift 6 strict pénible. Aucune raison de la choisir pour un projet 100% Swift moderne. |
+| Custom (`URLSession` + `URLCache` + `CGImageSource`) | ❌ | Estimation honnête: 2-3 jours pour atteindre ~80% de la qualité de Nuke, avec en prime un prefetch coordonné, un memory pressure handling, et une dédup de requêtes à concevoir from scratch. C'est 60-80% du budget d'un test technique de 3 jours brûlés sur de l'infrastructure que personne n'évalue. |
+
+**Pourquoi Nuke spécifiquement (et pas seulement "une lib d'images"):**
+
+- **Maturité** — 9+ ans, utilisé en production par des apps iOS de premier plan, battle-tested sur exactement notre type de charge (carousels, feeds).
+- **API SwiftUI native** — `LazyImage` est une vraie `View`, pas un `UIViewRepresentable` bricolé. Lifecycle, transitions et modifiers fonctionnent comme attendu.
+- **`ImagePrefetcher` first-class** — pilotage propre depuis le ViewModel, pas un détail d'implémentation.
+- **`@MainActor` annoté correctement** (Nuke 12+) — colle à notre modèle Swift 6 strict sans `@unchecked Sendable` ni warnings à supprimer.
+- **Pipeline configurable** — un `DataLoader` stub injecté côté tests pour des snapshots hermétiques (cf. `architecture.md` § *Snapshot determinism*).
+- **Petit footprint** — ~200 KB binaire, pas de dépendances Obj-C, build rapide.
+
+**Ce qu'on évite côté usage de Nuke:**
+
+- Pas de gros wrapper "anti-corruption layer au cas où on changerait de lib" — YAGNI. `LazyImage` est utilisé directement dans les composants design.
+- Le wrapper qu'on a (`ImageLoader.configure()` + `ImagePrefetchHandle`) ne fait que deux choses: (1) configurer le pipeline une seule fois, (2) tenir un handle de prefetch dont la durée de vie est liée à un écran (cancellation propre).
+- Pas de bundling d'images en assets — le spec exige `picsum.photos/seed/{stableSeed}` pour la stabilité inter-sessions, ce qui implique le réseau et donc une vraie pipeline.
+
+### swift-snapshot-testing (test target uniquement)
+
+Référence dans l'écosystème iOS pour les snapshots. Permet de figer l'apparence des composants et de détecter les régressions visuelles sans tooling maison.
+
+**Alternatives écartées:**
+
+| Option | Verdict | Raison |
+|---|---|---|
+| iOS 16+ `ImageRenderer` à la main | ❌ | Permet de générer un PNG depuis une `View`, mais il faut écrire soi-même: la comparaison pixel-à-pixel, le rapport de diff visuel, la gestion des références par device/scale, l'intégration XCTest. C'est précisément ce que la lib offre prêt à l'emploi. |
+| Tests UI XCUITest avec captures | ❌ | Trop lent (boot simulator, navigation), trop fragile (timing, animations), inadapté à des composants isolés. |
+| Pas de snapshot tests | ❌ | Casserait l'objectif "test coverage first-class" du brief. Les composants design (rings, progress bar, like button) sont pile le profil où le snapshot vaut une page de tests d'unitaires sur du layout. |
+
+`swift-snapshot-testing` est au test target uniquement — aucune surface de production n'en dépend, donc le risque "lib abandonnée" est nul: au pire on freeze la version, les tests continuent de tourner.
 
 ## Comportement produit
 
