@@ -170,7 +170,8 @@ final class PlaybackController {
 ```
 
 ```swift
-// ViewerStateModel — owns the navigation, seen, like, dismiss.
+// ViewerStateModel — owns the navigation, seen, like, dismiss, and the
+// transient gesture state (immersive, drag offset, heart pop).
 // Drives PlaybackController; reacts to its `onItemEnd` to advance.
 @MainActor
 @Observable
@@ -180,12 +181,19 @@ final class ViewerStateModel {
     private(set) var isLiked = false
     private(set) var shouldDismiss = false
 
+    // Gesture-driven transient state (View binds to these; pure data, no SwiftUI types)
+    private(set) var isImmersive = false              // long-press chrome hide
+    private(set) var dragOffset: CGFloat = 0          // swipe-down translation
+    private(set) var dragProgress: Double = 0         // 0...1 dismiss progress
+    private(set) var pendingHeartPop: HeartPop?       // double-tap overlay; cleared by clock task
+
     let playback: PlaybackController
 
     private let users: [Story]
     private let stateStore: any UserStateRepository
     private let clock: any Clock<Duration>
     private var seenMarkTask: Task<Void, Never>?
+    private var heartPopClearTask: Task<Void, Never>?
 
     init(
         users: [Story],
@@ -197,13 +205,30 @@ final class ViewerStateModel {
         // build playback if not injected; wire onItemEnd to nextItem()
     }
 
-    func toggleLike()       { ... }       // optimistic update
+    func toggleLike()       { ... }       // optimistic update (footer button)
+    func doubleTapLike(at point: CGPoint) { ... }  // sets isLiked = true (idempotent), schedules pendingHeartPop
     func nextItem()         { ... }       // explicit tap-forward also marks seen now
     func previousItem()     { ... }
     func nextUser()         { ... }
     func previousUser()     { ... }
     func dismiss()          { shouldDismiss = true }
     func onItemDidStart()   { ... }       // schedules seenMarkTask after 1.5s
+
+    // Immersive (long-press)
+    func beginImmersive()   { isImmersive = true; playback.pause() }
+    func endImmersive()     { isImmersive = false; playback.resume() }
+
+    // Swipe-down dismiss (drag-driven)
+    func updateDrag(translationY: CGFloat, containerHeight: CGFloat)  { ... }
+    func endDrag(translationY: CGFloat, velocityY: CGFloat, containerHeight: CGFloat) { ... }
+
+    // Pure predicate, unit-testable without a View (mirrors shouldLoadMore)
+    func shouldCommitDismiss(translationY: CGFloat, velocityY: CGFloat, containerHeight: CGFloat) -> Bool { ... }
+}
+
+struct HeartPop: Sendable, Equatable {
+    let id: UUID
+    let location: CGPoint
 }
 ```
 
@@ -537,14 +562,14 @@ Corruption recovery: if `JSONDecoder` throws on init, the store logs `.error`, d
 ```
 NavigationView                        ← not used
 .fullScreenCover(isPresented:)        ← used for viewer
-TabView with .tabViewStyle(.page)     ← used inside viewer for user pagination
+Paged HStack + offset (custom)        ← used inside viewer for user pagination
 .matchedTransitionSource +            ← used for tray-avatar → viewer-header
 .navigationTransition(.zoom)             zoom transition (iOS 18)
 ```
 
 Rationale:
 - The viewer is a modal experience, not a navigable destination. `.fullScreenCover` matches Instagram's behavior (slide up, blocks navigation, dismissed by gesture).
-- TabView with page style is the simplest correct way to swipe between users. Custom UIPageViewController is unnecessary at this scope.
+- User pagination is a hand-rolled paged `HStack` + `offset` driven by a `DragGesture`, **not** `TabView(.page)`. The custom transition (parallax + scale + opacity, see `design.md` § *Specific animations → Swipe between users*) is not expressible through `TabView`'s page style, and the gesture must be interruptible mid-flight when the user reverses direction — `TabView` snaps to the nearest page on release and ignores the in-progress drag. The implementation is ~80 lines of `GeometryReader` + offset arithmetic and is unit-testable through the same drag-state model used by swipe-down dismiss.
 
 ### Tray-avatar → viewer zoom transition
 
@@ -597,7 +622,34 @@ struct ViewerTapZones: View {
 
 The zones live above the image and below interactive UI (header close button, like button) using SwiftUI z-order. They're hidden from VoiceOver as buttons (not as tap zones) so screen-reader users get explicit affordances.
 
-Long-press is a separate `LongPressGesture(minimumDuration: 0.2)` attached to the page; horizontal swipe is handled by the parent `TabView`; vertical swipe-down dismiss is a `DragGesture` on the page with the threshold from `design.md`.
+### Long-press (chrome hide + pause)
+
+`LongPressGesture(minimumDuration: 0.2)` attached to the page. On `onChanged`/`onEnded` the View sets `state.isImmersive` (a `@MainActor` flag on `ViewerStateModel`); the header, footer, progress bar and tap-zone affordances are conditionally rendered with an opacity transition via `Motion.fast`. The image stays at full opacity throughout — the chrome is the only thing that hides.
+
+Long-press conflict resolution: a long-press that detects a translation > 8pt in any direction during its grace period is cancelled and the touch is routed to the surrounding `DragGesture` (horizontal user-swipe or vertical dismiss). This is wired with `simultaneousGesture` + `exclusively(before:)` so a swipe that begins as a slow press never locks the user out of dismiss. `ViewerStateModel.beginImmersive()` / `endImmersive()` are the two intents the View calls; both also drive `playback.pause()` / `playback.resume()`.
+
+### Double-tap like (heart pop)
+
+`TapGesture(count: 2)` lives on the right two-thirds zone alongside the single-tap "next" handler. SwiftUI's gesture arbitration fires the single-tap only when the double-tap fails to match — so the two never collide and there is no perceptible delay on single-tap (the system uses the platform double-tap window, ~0.25s).
+
+Double-tap dispatches `state.doubleTapLike(at: CGPoint)`; the ViewModel exposes `pendingHeartPop: HeartPop?` (a `Sendable` value type holding the tap location and a unique ID) that the View observes and renders as an overlay. The overlay animates from the design spec (scale 0 → 1.4 → 1.0, fade in/out over `Motion.standard`) and clears `pendingHeartPop` to `nil` on completion via a `Task` scheduled on the injected clock — keeping the cleanup deterministic and unit-testable.
+
+Important: double-tap-like is **idempotent toward "liked"**, not a toggle. A second double-tap on an already-liked item still fires the heart pop (so the gesture always feels responsive) but does not un-like. Un-like is only available via the `LikeButton` in the footer. This matches Instagram and avoids the "I tapped twice fast and accidentally undid my like" foot-gun.
+
+### Vertical swipe-down dismiss (interactive)
+
+A `DragGesture(minimumDistance: 10)` on the page drives `state.dragOffset: CGFloat` and `state.dragProgress: Double` (0...1), updated on every `onChanged`. The View binds:
+- The image's `.scaleEffect` to `1.0 - dragProgress * 0.15`
+- The viewer background's `.opacity` to `1.0 - dragProgress`
+- Playback is paused on the first non-zero `onChanged` and resumed only on snap-back
+
+`onEnded` calls `state.endDrag(translation:velocity:)` which decides between dismiss (commit, fires `shouldDismiss = true`) and snap-back (clears `dragOffset` with the spring tokens from `design.md`). Both branches use `withAnimation(Motion.standard)` from the View; the ViewModel only mutates plain state.
+
+This split keeps the threshold logic (translation > 30% of container OR velocity > 800pt/s) inside `ViewerStateModel` as a pure function `func shouldCommitDismiss(translationY:velocityY:containerHeight:) -> Bool`, unit-testable without a View — same pattern as `StoryListViewModel.shouldLoadMore`.
+
+### Horizontal user swipe
+
+The custom paged `HStack` in the viewer (see *Navigation*) attaches its own `DragGesture` for user swiping. Horizontal-vs-vertical disambiguation: a drag is locked to its axis after the first 12pt of translation by comparing `|translation.x|` to `|translation.y|` — the larger axis wins, the gesture handler ignores motion on the other axis until release. This prevents a near-diagonal drag from triggering both a user swipe and a dismiss.
 
 ### Image-fail UI
 
@@ -705,6 +757,10 @@ Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 | Deployment target | iOS 18 | iOS 17 | Unlocks `.navigationTransition(.zoom)` (the product's marquee transition), `onScrollGeometryChange` (testable pagination trigger), and Swift 6 View-isolation simplifications. Cost is negligible 20 months after release. |
 | Pagination trigger | `onScrollGeometryChange` → pure VM predicate | `onAppear` sentinel / `GeometryReader` + `PreferenceKey` | Decision moves out of the View into a unit-testable function; matches the "no business logic in Views" rule for this code path |
 | Tray → viewer transition | `.navigationTransition(.zoom)` | `matchedGeometryEffect` across `.fullScreenCover` | Native API, no flicker on dismiss, native interactive dismiss, ~30-50 fewer lines |
+| User pagination inside viewer | Hand-rolled paged `HStack` + `DragGesture` | `TabView(.page)` | Custom parallax+scale transition not expressible with `TabView`'s page style; gesture must remain interruptible mid-flight on direction reversal |
+| Swipe-down dismiss | Interactive drag (translation + velocity, rubber-banded, scale + opacity) | Binary swipe with threshold | Reviewer feels the gesture instead of a one-shot; threshold logic still pure-function and unit-testable |
+| Long-press behaviour | Pause + chrome hide (header/footer/progress fade out) | Pause only | Matches Instagram; lets the user dwell on the frame; chrome is conditionally rendered, not laid out conditionally, so geometry stays stable |
+| Double-tap on image | Heart pop overlay + idempotent like (no un-like) | No double-tap or toggle | High-perceived-quality micro-interaction; idempotency avoids the "I tapped twice fast and lost my like" foot-gun |
 | Persistence | actor + JSON file | SwiftData, UserDefaults | Thread-safe by construction, fast, testable, right-sized |
 | Pagination | local recycling with ID suffixes | network mock | Spec-compliant, no flaky tests |
 | Images | Nuke | AsyncImage, custom | Production-grade caching/prefetch without writing it |

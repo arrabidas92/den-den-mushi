@@ -54,6 +54,8 @@ Choosing XCTest in 2026 with a Swift 6 strict project would read as a stale-temp
   *Risk covered: timer drifting in background = items marked seen the user never saw. Missed reset = progress bar starts mid-bar on the next item.*
 - `ViewerStateModel` — all state transitions (next/prev item, next/prev user, dismiss on end), seen marking fires only after 1.5s OR on explicit next-tap, optimistic like flips state before persistence completes.
   *Risk covered: the ring lying (seen shown when nothing was viewed, cf. 1.5s rule) and likes feeling "laggy" because they wait on persistence. The two behaviors the reviewer will specifically try to break.*
+- `ViewerStateModel` (gesture surface) — `shouldCommitDismiss(translationY:velocityY:containerHeight:)` returns true past the 30% / 800pt·s⁻¹ thresholds and false below; `updateDrag` pauses playback on first non-zero translation and snap-back resumes it; `doubleTapLike` is idempotent (already-liked items stay liked, second pop still fires); `beginImmersive`/`endImmersive` toggle `isImmersive` and pause/resume playback in lockstep; `pendingHeartPop` is cleared by the injected clock after the animation window so back-to-back double-taps produce distinct overlays.
+  *Risk covered: a swipe-down that commits when the user only meant to peek (or, worse, doesn't commit when they meant to dismiss) — both feel broken. A double-tap that un-likes is the foot-gun the spec explicitly avoids. Long-press that desyncs from playback (chrome hidden but timer ticking, or vice-versa) marks items seen the user never watched. Stale `pendingHeartPop` swallows the second tap of a quick double-double.*
 - `StoryListViewModel` — pagination triggers at N-3 (test the pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` function — the View only forwards geometry from `onScrollGeometryChange`), no double-load, error states.
   *Risk covered: double-load = duplicated pages in the list (and ID collisions in the store). Late trigger = scroll hits the end before the next page arrives.*
 
@@ -101,15 +103,15 @@ Hand-written fakes (`FakeStoryRepository`, `InMemoryUserStateStore`) in test tar
 ## Polish explicitly skipped (documented in README)
 
 Traded for test coverage:
-- Interactive swipe-down dismiss (binary swipe is enough)
-- Custom transition between users (default page transition used)
-- Long-press hides full UI (just pauses)
-- Animated heart pop on double-tap
 - "Send message" footer field
 - Crossfade on seen ring transition (instant swap is fine and one less thing to test)
 
 Kept (low cost, high perceived quality):
 - **Zoom transition tray avatar → viewer header** via `.matchedTransitionSource(id:in:)` + `.navigationTransition(.zoom(sourceID:in:))` (iOS 18 native). The single transition reviewers feel most. Native API replaces the iOS 17 `matchedGeometryEffect` workaround — fewer artefacts on dismiss, less custom code, and it is the same primitive Photos.app uses.
+- Interactive swipe-down dismiss (drag-to-dismiss with rubber-banding and progressive fade, not just a binary swipe trigger)
+- Custom transition between users (beyond the default page transition)
+- Long-press hides the full UI (chrome fades out, not just playback pause)
+- Animated heart pop on double-tap
 - ScenePhase pause
 - Image preloading via Nuke prefetch
 - Reduced-motion support (auto-advancing content without it is a senior-submission red flag; ~30 min via the `Motion` tokens in `design.md`)

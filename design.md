@@ -120,7 +120,9 @@ Default is `regular`. The two others exist as a single-line override — useful 
 
 ### Tap zones (viewer)
 
-Vertical split, **1:2 ratio** (left third = previous, right two-thirds = next). Forward is the dominant action so its zone is larger; this matches Instagram's actual behaviour and reduces accidental "previous" taps when users are flicking through. Both zones are full-height excluding the 56pt header and 64pt footer. Long-press on either zone pauses.
+Vertical split, **1:2 ratio** (left third = previous, right two-thirds = next). Forward is the dominant action so its zone is larger; this matches Instagram's actual behaviour and reduces accidental "previous" taps when users are flicking through. Both zones are full-height excluding the 56pt header and 64pt footer. Long-press on either zone pauses **and hides the full UI** (header, footer, progress bar, tap-zone affordances all fade out over `Motion.fast`) — the point is to let the user dwell on the frame uninterrupted, the same as Instagram. Release restores the chrome and resumes playback from the same offset.
+
+Double-tap anywhere in the right two-thirds zone fires a `like` with the animated heart-pop overlay (see *Specific animations*). The double-tap detector takes precedence over the single-tap "next" handler — single-tap is fired on `simultaneousGesture` cancellation, not on touch-up, so the two never collide.
 
 ### Image failure (viewer)
 
@@ -174,35 +176,64 @@ Auto-advance is **kept on** under reduced motion — disabling it would break th
 
 ```
 Open viewer (tray → fullscreen)
-    Default fullScreenCover, no custom transition
-    Rationale: matched geometry costs ~1.5h, marginal visual gain
+    .matchedTransitionSource + .navigationTransition(.zoom) (iOS 18)
+    Avatar morphs into the viewer header; reduced-motion collapses to crossfade
 
-Like tap
+Like tap (single tap on heart)
     spring(response: 0.3, dampingFraction: 0.6)
     scale: 0.8 → 1.2 → 1.0
     haptic: .impact(.medium) at tap moment
     color: stroke white → fill #FF3B30, crossfade 0.2s
 
+Like (double-tap on image — animated heart pop)
+    Heart appears at the tap location, scales 0 → 1.4 → 1.0 then fades
+    spring(response: 0.35, dampingFraction: 0.55) on scale
+    opacity 0 → 1 → 0 over Motion.standard, ease-out
+    Color #FF3B30, size 96pt, no border
+    haptic: .impact(.medium), same as single-tap like
+    Liked state in the model flips to true; a second double-tap does NOT unlike
+    (matches Instagram — only the LikeButton un-likes)
+
 Progress bar fill
     .linear(duration: itemDuration)
     Reset instantly on item change (no animation backwards)
 
-Pause (long press)
-    UI overlay opacity 1 → 0, ease-out 0.2s
+Pause (long press, hides full UI)
+    Header, footer, tap-zone glyphs, progress bar all opacity 1 → 0, ease-out Motion.fast
+    Image stays fully visible (this is the point — give the user the frame)
     Progress bar timer pauses, visual progress freezes
+    Release: reverse fade over Motion.fast, playback resumes from the same offset
+    Cancellation rule: any horizontal/vertical drag during the long-press cancels the
+    chrome-hide and routes the gesture to the underlying drag handler — long-press
+    must not lock out swipe-down dismiss or user-swipe
 
-Swipe between users
-    Default TabView page style transition
-    Rationale: cube transition costs ~1d, default works fine
+Swipe between users (custom horizontal transition)
+    Replaces the default TabView page style with a parallax + scale custom transition
+    Outgoing user: x offset to ±containerWidth * 0.85, scale 1.0 → 0.92, opacity 1 → 0.6
+    Incoming user: x offset from ±containerWidth, scale 0.96 → 1.0, opacity 0.6 → 1.0
+    Curve: spring(response: 0.45, dampingFraction: 0.85) — interruptible
+    Reduced-motion: collapses to a hard cut (no parallax, no scale, no fade)
+    Implementation: hand-rolled paged HStack + offset, NOT TabView, so we can
+    interrupt mid-flight when the user reverses direction
 
 Seen ring transition
     Unseen → seen on dismiss
     Crossfade between ring colors, 0.4s ease-out
     Never snap, never pop
 
-Dismiss swipe down
-    Binary: threshold 100pt OR velocity > 500pt/s → dismiss
-    Rationale: interactive dismiss skipped for time
+Dismiss swipe down (interactive)
+    Drag tracks the finger 1:1 in y; image content scales from 1.0 → 0.85 with
+    drag progress (translation.y / containerHeight, clamped 0...1)
+    Background fades from #000000 → fully transparent over the same progress
+    Rubber-banding: upward drag (negative y) is dampened to 0.3x of input
+    Release rules:
+      - progress > 0.30 OR velocity.y > 800pt/s → animate to dismissed
+        (continue the scale/fade trajectory, spring response 0.35, damping 0.85)
+      - otherwise → spring back to identity
+        (spring response: 0.4, dampingFraction: 0.8)
+    Playback paused for the entire drag; resumes only on snap-back
+    Reduced-motion: drag still tracks, but on commit the dismiss is instant
+    (no scale-out animation), and snap-back is also instant
 ```
 
 ### Haptics
