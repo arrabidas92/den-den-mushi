@@ -5,7 +5,7 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 ## Stack
 
 - **Swift** 5.10+, **SwiftUI** en primaire (UIKit uniquement si SwiftUI est insuffisant)
-- **iOS 17.0** minimum — `@Observable`, framework `Observation`, `@Bindable`
+- **iOS 18.0** minimum — `@Observable` / `Observation` / `@Bindable`, `.navigationTransition(.zoom)` pour la transition tray→viewer, `onScrollGeometryChange` pour le trigger de pagination, isolation `@MainActor` simplifiée des Views sous Swift 6
 - **Swift 6** strict concurrency activé
 - **XCTest** + **swift-snapshot-testing** pour les tests
 - **Nuke** pour le chargement d'images
@@ -90,7 +90,7 @@ Volontairement échangés contre une meilleure couverture de tests:
 
 Conservés (faible coût, gain de qualité perçue):
 
-- **Matched geometry tray avatar → header du viewer** — la transition que les reviewers ressentent le plus, ~1.5h de travail pour le meilleur retour sur qualité perçue
+- **Zoom transition tray avatar → header du viewer** via `.matchedTransitionSource` + `.navigationTransition(.zoom)` (iOS 18 natif) — la transition que les reviewers ressentent le plus, dismiss interactif fourni gratuitement, sans le flicker du `matchedGeometryEffect` à travers `.fullScreenCover` qu'aurait imposé iOS 17
 - Pause sur `scenePhase` non actif
 - Préchargement images via `Nuke prefetch`
 - Support *reduced motion* (auto-advancing content sans le respecter est rédhibitoire à un niveau senior; ~30 min via les tokens `Motion` du design system)
@@ -109,7 +109,7 @@ Conservés (faible coût, gain de qualité perçue):
 - L'état **seen est par StoryItem**, pas par Story. Le ring reflète l'état "fully seen".
 - Le **seen est marqué après 1.5s de lecture OU sur next-tap explicite**. Un tap-and-dismiss immédiat ne marque rien (sinon le ring grise sans qu'aucun contenu n'ait été vu).
 - Le **like est par StoryItem**. UI optimiste: l'état flippe immédiatement, la persistence suit.
-- **Pagination**: 10 users par page, déclenchée à l'index N-3. Recyclage local du JSON avec IDs suffixés (`alice-p1`, `alice-p2`...).
+- **Pagination**: 10 users par page, déclenchée quand on est à 3 items de la fin du contenu chargé. Le trigger lit la géométrie via `onScrollGeometryChange` et délègue la décision à une fonction pure du ViewModel (`shouldLoadMore(contentOffset:contentSize:containerSize:)`), testée en unitaire sans UI. Recyclage local du JSON avec IDs suffixés (`alice-p1`, `alice-p2`...).
 - **Auto-advance**: 5s par item. Zones de tap **verticales 1:2** (tiers gauche = previous, deux tiers droits = next, ratio Instagram), long-press = pause, swipe horizontal = next/prev user, swipe down = dismiss.
 - **Pause en background**: le timer s'interrompt quand `scenePhase` n'est pas `.active`.
 - **Échec d'image**: cadre `Surface` avec icône, légende "Couldn't load this story" et bouton `Retry`. L'auto-advance se met en pause sur le cadre d'échec; le tap-forward reste actif. Pas d'haptique, pas d'alerte.

@@ -308,7 +308,7 @@ Why an actor:
 
 Why JSON file (not SwiftData / UserDefaults):
 - **UserDefaults**: ergonomic but no concurrency guarantees, awkward for collections, no atomic writes.
-- **SwiftData**: heavy for `Set<String>`. Has unresolved threading bugs in iOS 17.x. Adds a model layer for no gain.
+- **SwiftData**: heavy for `Set<String>`. Adds a model layer for no gain.
 - **Codable JSON + actor**: precise, fast for our data size (<1KB), trivially testable with a temp directory, atomic via `Data.write(to:options: [.atomic])`.
 
 Why debounce:
@@ -344,7 +344,48 @@ Edge cases the formula covers explicitly:
 
 `Story.withPageSuffix(_:)` rewrites both `story.id` (`"alice"` → `"alice-p1"`) and every `StoryItem.id` (`"alice-1"` → `"alice-1-p1"`). Image URLs are *not* re-seeded — the same user must show the same images across pages (CLAUDE.md hard rule on stability).
 
-ViewModel triggers `loadPage(currentPage + 1)` when `currentIndex >= count - 3`. Guard with an `isLoadingMore` flag to prevent double-loads. A failed page load surfaces a non-blocking error and leaves `isLoadingMore = false` so a future scroll retries (see *Error handling*).
+ViewModel triggers `loadPage(currentPage + 1)` when the user is within 3 items of the end of the loaded content. Guard with an `isLoadingMore` flag to prevent double-loads. A failed page load surfaces a non-blocking error and leaves `isLoadingMore = false` so a future scroll retries (see *Error handling*).
+
+The trigger is wired via iOS 18's `onScrollGeometryChange(for:of:action:)`, which exposes `contentOffset`, `contentSize`, and `containerSize` in real time — no `GeometryReader` + `PreferenceKey` plumbing, and no reliance on `onAppear` of a "sentinel" cell (which is fragile under cell recycling and fires on backward-scroll re-entry). The "near end" predicate is a pure function on the ViewModel so the test plan covers it directly without a View:
+
+```swift
+@MainActor
+@Observable
+final class StoryListViewModel {
+    private(set) var pages: [Story] = []
+    private(set) var isLoadingMore = false
+    private let pageSize = 10
+    private let triggerOffset = 3                          // N-3
+
+    /// Pure function: true when the visible viewport is within `triggerOffset`
+    /// items of the end of currently loaded content. Inputs come straight from
+    /// `ScrollGeometry`; no SwiftUI types involved, so tests pass synthetic
+    /// geometries and assert the flag without spinning a View.
+    func shouldLoadMore(contentOffset: CGFloat, contentSize: CGFloat, containerSize: CGFloat) -> Bool {
+        guard contentSize > containerSize else { return false }
+        let itemExtent = contentSize / CGFloat(max(pages.count, 1))
+        let distanceToEnd = contentSize - (contentOffset + containerSize)
+        return distanceToEnd < itemExtent * CGFloat(triggerOffset)
+    }
+}
+```
+
+The View becomes a thin forwarder:
+
+```swift
+ScrollView(.horizontal) { /* ... */ }
+    .onScrollGeometryChange(for: Bool.self) { geo in
+        viewModel.shouldLoadMore(
+            contentOffset: geo.contentOffset.x,
+            contentSize: geo.contentSize.width,
+            containerSize: geo.containerSize.width,
+        )
+    } action: { _, nearEnd in
+        if nearEnd { Task { await viewModel.loadMoreIfNeeded() } }
+    }
+```
+
+This restores the "no business logic in Views" rule for the pagination trigger — in the iOS 17 idiom (`onAppear` on a sentinel cell or hand-rolled offset tracking via `GeometryReader` + `PreferenceKey`), the "should load" decision was structurally entangled with View lifecycle and could not be unit-tested without UI scaffolding.
 
 ## Image loading
 
@@ -493,11 +534,29 @@ Corruption recovery: if `JSONDecoder` throws on init, the store logs `.error`, d
 NavigationView                        ← not used
 .fullScreenCover(isPresented:)        ← used for viewer
 TabView with .tabViewStyle(.page)     ← used inside viewer for user pagination
+.matchedTransitionSource +            ← used for tray-avatar → viewer-header
+.navigationTransition(.zoom)             zoom transition (iOS 18)
 ```
 
 Rationale:
 - The viewer is a modal experience, not a navigable destination. `.fullScreenCover` matches Instagram's behavior (slide up, blocks navigation, dismissed by gesture).
 - TabView with page style is the simplest correct way to swipe between users. Custom UIPageViewController is unnecessary at this scope.
+
+### Tray-avatar → viewer zoom transition
+
+The tray avatar is marked as a transition source with a stable namespace identifier (the user's stable ID, not the page-suffixed ID — the visual element is the same person across page repeats):
+
+```swift
+@Namespace private var trayNamespace
+
+StoryAvatar(user: user)
+    .matchedTransitionSource(id: user.stableID, in: trayNamespace)
+    .onTapGesture { viewModel.openViewer(at: index) }
+```
+
+The viewer adopts the matching destination via `.navigationTransition(.zoom(sourceID:in:))`. The animation is the same primitive Photos.app uses on iOS 18 — it interpolates the view's frame, scale, and corner radius natively, with a built-in interactive dismiss. The previous iOS 17 idiom was `matchedGeometryEffect` across two view hierarchies separated by `.fullScreenCover`, which is technically possible but visibly imperfect (single-frame flicker at the boundary, layout pass desynchronisation on dismiss, no native interactive dismiss). The native API removes both the flicker and ~30-50 lines of compensating code, and is one of the small set of polish items reviewers feel without having to be told to look for.
+
+Reduced-motion: when `accessibilityReduceMotion` is on, the zoom collapses to a cross-fade automatically — no extra wiring needed. Verified via the `Motion` token strategy in `design.md`.
 
 ## Gestures & failure UI
 
@@ -629,7 +688,7 @@ Snapshots that include image-loading components (`StoryAvatar`, `StoryTrayItem`,
 Strategy:
 - Inject a stub image source into Nuke's `ImagePipeline` for the test target only, via a `DataLoader` that returns a fixed in-memory PNG payload for any URL. Configured once in a test bootstrap.
 - Snapshot helpers wait one runloop tick after the View appears so `LazyImage` resolves against the stub before the snapshot fires.
-- Pin: iPhone 15 Pro, iOS 17.4 simulator, Xcode 15.4. Recorded in the test target's README.
+- Pin: iPhone 15 Pro, iOS 18.x simulator, Xcode 16.x. Recorded in the test target's README.
 
 Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 
@@ -638,7 +697,10 @@ Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 | Decision | Chosen | Alternative | Why |
 |---|---|---|---|
 | Architecture | MVVM + Repository | TCA, Clean Arch | Best ratio of structure to ceremony for this scope |
-| State mgmt | `@Observable` | `ObservableObject` | iOS 17 native, no `@Published` boilerplate, signals modern stack |
+| State mgmt | `@Observable` | `ObservableObject` | iOS 17+ native, no `@Published` boilerplate, signals modern stack |
+| Deployment target | iOS 18 | iOS 17 | Unlocks `.navigationTransition(.zoom)` (the product's marquee transition), `onScrollGeometryChange` (testable pagination trigger), and Swift 6 View-isolation simplifications. Cost is negligible 20 months after release. |
+| Pagination trigger | `onScrollGeometryChange` → pure VM predicate | `onAppear` sentinel / `GeometryReader` + `PreferenceKey` | Decision moves out of the View into a unit-testable function; matches the "no business logic in Views" rule for this code path |
+| Tray → viewer transition | `.navigationTransition(.zoom)` | `matchedGeometryEffect` across `.fullScreenCover` | Native API, no flicker on dismiss, native interactive dismiss, ~30-50 fewer lines |
 | Persistence | actor + JSON file | SwiftData, UserDefaults | Thread-safe by construction, fast, testable, right-sized |
 | Pagination | local recycling with ID suffixes | network mock | Spec-compliant, no flaky tests |
 | Images | Nuke | AsyncImage, custom | Production-grade caching/prefetch without writing it |

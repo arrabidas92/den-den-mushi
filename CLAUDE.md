@@ -11,7 +11,7 @@ Build an Instagram Stories-like feature for a BeReal technical assessment. The p
 ## Hard rules
 
 - **Language**: Swift 5.10+, SwiftUI primary. UIKit only when SwiftUI is genuinely insufficient.
-- **iOS target**: 17.0 minimum. Use `@Observable`, `Observation` framework, `@Bindable`. Do NOT use `ObservableObject` / `@Published`.
+- **iOS target**: 18.0 minimum. Use `@Observable`, `Observation` framework, `@Bindable`. Do NOT use `ObservableObject` / `@Published`. iOS 18 unlocks three APIs we use directly: `.matchedTransitionSource` + `.navigationTransition(.zoom)` for the tray-avatar→viewer transition, `onScrollGeometryChange` for the pagination N-3 trigger, and the relaxed `@MainActor`-by-default View isolation under Swift 6 strict concurrency. Targeting 17 in 2026 with no compensating reason is a stale-template signal in senior review.
 - **Concurrency**: Swift 6 strict mode enabled. Everything is `Sendable` or explicitly marked. Repositories and stores are `actor`s. ViewModels are `@MainActor`.
 - **External libraries**: only `Nuke` (image loading) and `swift-snapshot-testing` (test target only). Any other dependency must be justified to the user before adding.
 - **Persistence**: `actor` + Codable JSON via `FileManager`. No SwiftData, no UserDefaults for state, no Core Data.
@@ -25,7 +25,7 @@ Build an Instagram Stories-like feature for a BeReal technical assessment. The p
 - **Seen state is per StoryItem**, not per Story. A story is "fully seen" when all items are seen. Ring reflects fully-seen state.
 - **Seen mark fires on (item-start AND elapsed > 1.5s) OR on next-tap**. Plain "seen on start" causes a tap-and-immediately-dismiss to mark items seen with zero content shown — felt as a bug. The 1.5s floor matches the perceptual threshold for "I actually saw something"; the next-tap path covers users who power-skim through a user's stories faster than 1.5s but explicitly advanced.
 - **Like is per StoryItem**. Optimistic UI: state flips instantly, persistence happens after.
-- **Pagination**: 10 users per page, triggered when scrolling reaches index N-3. Recycles the local JSON with suffixed IDs (`alice-p1`, `alice-p2`...).
+- **Pagination**: 10 users per page, triggered when scrolling reaches index N-3. Use `onScrollGeometryChange(for: Bool.self)` to derive a "near end" flag from `contentOffset` / `contentSize` / `containerSize`; expose the threshold as a pure function on `StoryListViewModel` so it is unit-testable without a View. Recycles the local JSON with suffixed IDs (`alice-p1`, `alice-p2`...).
 - **Auto-advance**: 5s per item. Tap zones split **1:2 vertically** (left third = previous, right two-thirds = next, mirroring Instagram — forward is the dominant action). Long-press = pause. Swipe horizontal = next/prev user. Swipe down = dismiss.
 - **Background pause**: timer pauses when scenePhase is not `.active`.
 - **Image fail is visible**: failed item images render a `Surface`-tinted frame with a small icon, "Couldn't load this story" caption, and a `Retry` button. Auto-advance pauses on the failure frame; tap-forward still works. No haptic, no alert.
@@ -41,7 +41,7 @@ Testing is a first-class concern, not a final step. Tests are written **alongsid
 - `LocalStoryRepository`: page count, ID uniqueness across pages, deterministic output, JSON parse.
 - `PlaybackController`: tick advance, pause/resume preserves progress, restart on item change resets to 0, scenePhase pause halts ticks and resumes from same offset.
 - `ViewerStateModel`: all state transitions (next/prev item, next/prev user, dismiss on end), seen marking fires only after 1.5s OR on explicit next-tap, optimistic like flips state before persistence completes.
-- `StoryListViewModel`: pagination triggers at N-3, no double-load, error states.
+- `StoryListViewModel`: pagination triggers at N-3 (test the pure `shouldLoadMore(contentOffset:contentSize:containerSize:)` function — the View only forwards geometry from `onScrollGeometryChange`), no double-load, error states.
 
 **Not tested** (mention in README):
 - Pure View layouts (covered by snapshots).
@@ -87,7 +87,7 @@ Traded for test coverage:
 - Crossfade on seen ring transition (instant swap is fine and one less thing to test)
 
 Kept (low cost, high perceived quality):
-- **Matched geometry tray avatar → viewer header**: the single transition reviewers feel most. ~1.5h of work for the largest perceived-quality return; worth more than ring crossfade and footer chrome combined.
+- **Zoom transition tray avatar → viewer header** via `.matchedTransitionSource(id:in:)` + `.navigationTransition(.zoom(sourceID:in:))` (iOS 18 native). The single transition reviewers feel most. Native API replaces the iOS 17 `matchedGeometryEffect` workaround — fewer artefacts on dismiss, less custom code, and it is the same primitive Photos.app uses.
 - ScenePhase pause
 - Image preloading via Nuke prefetch
 - Reduced-motion support (auto-advancing content without it is a senior-submission red flag; ~30 min via the `Motion` tokens in `design.md`)
