@@ -31,7 +31,7 @@ Text tertiary       #5A5A5A   // placeholders, disabled
 
 // Story rings
 Ring unseen         #FFFFFF   // solid 2pt
-Ring seen           #2A2A2A   // 1.5pt
+Ring seen           #404040   // 1.5pt — distinct from Border, visible on #000
 Ring loading        #FFFFFF + opacity pulse animation
 
 // Accents
@@ -39,6 +39,8 @@ Accent like         #FF3B30   // iOS system red, NOT pink
 Progress active     #FFFFFF
 Progress inactive   #FFFFFF @ 30% opacity
 ```
+
+`Border` and `Ring seen` are **separate tokens** even though their values are close. They mean different things: `Border` is a hairline divider on a surface, `Ring seen` is a foreground state indicator over the OLED background. Keep them distinct so they can drift independently if needed. `Ring seen` was bumped from `#2A2A2A` to `#404040` to clear the WCAG 1.07:1 contrast floor against the canvas — at the lower value the seen ring disappeared into the page on the third tray row.
 
 Implementation: extension `Color` with named static properties. Use `Color(.sRGB, ...)` to keep colors stable across iOS versions.
 
@@ -78,7 +80,7 @@ Use these constants exclusively in views. No magic numbers in layouts.
 // Tray
 Avatar diameter         64pt
 Ring gap (avatar↔ring)   3pt
-Tray item spacing       14pt
+Tray item spacing       14pt   // regular density (default)
 Tray padding (h, v)     16pt, 12pt
 
 // Viewer
@@ -99,9 +101,59 @@ Avatars                 full (geometry-based)
 Buttons                 full
 ```
 
+### Tray density
+
+Three densities, switchable via a single environment value (`TrayDensity.compact|regular|comfy`). Only the inter-item spacing changes; avatar size stays 64pt so the ring signature remains constant.
+
+```
+compact   item spacing 10pt   // dense, more users in viewport
+regular   item spacing 14pt   // default
+comfy    item spacing 18pt   // breathable, fewer users in viewport
+```
+
+Default is `regular`. The two others exist as a single-line override — useful for accessibility scenarios (compact for users who scan many users at once) and as a knob the reviewer can flip without touching layout code.
+
+### Tap zones (viewer)
+
+Vertical split, **1:2 ratio** (left third = previous, right two-thirds = next). Forward is the dominant action so its zone is larger; this matches Instagram's actual behaviour and reduces accidental "previous" taps when users are flicking through. Both zones are full-height excluding the 56pt header and 64pt footer. Long-press on either zone pauses.
+
+### Image failure (viewer)
+
+A failed item image is **not silent** — silence reads as a bug. The fallback frame:
+- Surface `#0E0E0E` background (not pure black, so the user perceives a frame, not a void)
+- Centered glyph: small offline/broken-image icon, `Text tertiary` color
+- Single line of caption, `SF Pro Text 13pt`, `Text secondary`: "Couldn't load this story"
+- A `Retry` button, 44pt min, low-emphasis (text-only, white at 70%)
+- Auto-advance is paused while the failure frame is visible. Tap-forward still works.
+
+No haptic on failure (HIG: don't punish the user for network conditions).
+
 ## Motion principles
 
 Motion reveals quality. The reviewer will feel these even unconsciously.
+
+### Duration tokens
+
+All durations route through named tokens. No hardcoded `0.2`/`0.3`/`0.4` in views. This buys two things: a coherent feel across components, and a one-line override for `accessibilityReduceMotion` (collapse all three to `0` and set transitions to `.identity`).
+
+```
+Motion.fast      = 0.2s   // micro-feedback: pause overlay fade, tap state
+Motion.standard  = 0.3s   // primary affordances: like spring, header fade
+Motion.slow      = 0.4s   // ring state crossfade, dismiss
+Motion.itemPlay  = 5.0s   // single item duration (progress bar fill)
+```
+
+Implementation: extension `Animation` (or a `Motion` enum returning `Animation`) with named static properties. Always reference tokens from views, never literal seconds.
+
+### Reduced motion
+
+`@Environment(\.accessibilityReduceMotion)` is honoured globally:
+- Progress bar animation: replaced by discrete tick at item end. Auto-advance still fires; the bar simply doesn't animate.
+- Ring crossfade on seen transition: replaced by instant swap.
+- Like spring: replaced by instant color/fill swap (no scale pop).
+- Pause overlay fade: instant.
+
+Auto-advance is **kept on** under reduced motion — disabling it would break the product. The user can still tap forward/back; the time-driven advance just no longer has an animated bar to telegraph it.
 
 ### Timing & curves
 
@@ -181,7 +233,7 @@ States:
 StoryAvatar(url: URL, ring: StoryRingState, size: CGFloat)
 ```
 
-Combines avatar image (loaded via Nuke) and `StoryRing`. Handles loading and failure states with a placeholder.
+Combines avatar image (loaded via Nuke) and `StoryRing`. Three internal states: loading (ring pulses, inner is `Surface elevated`), loaded (image fills inner), failed (initials glyph on `Surface elevated`, no haptic, no log spam).
 
 ### `SegmentedProgressBar`
 
@@ -206,10 +258,10 @@ Heart icon, 28pt. Unfilled white when not liked, filled #FF3B30 when liked. Trig
 ### `StoryTrayItem`
 
 ```swift
-StoryTrayItem(user: User, isFullySeen: Bool, onTap: () -> Void)
+StoryTrayItem(user: User, isFullySeen: Bool, density: TrayDensity = .regular, onTap: () -> Void)
 ```
 
-Composes `StoryAvatar` + username label. Truncates long usernames with `.lineLimit(1)` and `.truncationMode(.tail)`.
+Composes `StoryAvatar` + username label. Truncates long usernames with `.lineLimit(1)` and `.truncationMode(.tail)`. The `density` only affects the parent `HStack` spacing inside the tray, not the item itself; passing it here keeps the prop colocated with the consumer.
 
 ### `StoryViewerHeader`
 
@@ -231,13 +283,14 @@ Previews are documentation. A reviewer scrolling files should understand the sys
 
 ## Accessibility
 
-Not a primary focus for the test, but the cheap wins:
+The cheap, high-signal wins are in scope:
 
 - All interactive elements have `.accessibilityLabel`
 - Like button has `.accessibilityValue("liked" / "not liked")`
 - Tap targets ≥ 44pt
 - VoiceOver labels for the close button
+- **Reduced motion**: respected globally via `Motion.fast/standard/slow` collapsing to `0` and ring/like transitions becoming instant. Auto-advance still fires on a discrete tick (no animated bar), tap-through always works. See *Motion principles → Reduced motion*.
 
 Skipped (mention in README):
-- Reduced motion alternative (would replace progress bar animation)
-- Dynamic Type support (story UI is intentionally fixed-size)
+- Dynamic Type support (story UI is intentionally fixed-size; matches Instagram).
+- VoiceOver navigation through items (no rotor item; tap forward/back is the only flow).

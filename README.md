@@ -59,7 +59,8 @@ Les tests sont une préoccupation de premier ordre, écrits **en parallèle** du
 
 - `PersistedUserStateStore` — round-trip, écritures concurrentes, debounce, survie aux re-init
 - `LocalStoryRepository` — pagination, unicité des IDs, déterminisme, parsing JSON
-- `StoryViewerViewModel` — toutes les transitions d'état, marquage seen au démarrage de l'item, like optimiste, pause/resume
+- `PlaybackController` — avance des ticks, pause/resume conserve la progression, reset sur changement d'item, scenePhase pause stoppe et reprend depuis le même offset
+- `ViewerStateModel` — toutes les transitions d'état, marquage seen au seuil de 1.5s OU sur next-tap explicite, like optimiste, dismiss en fin de stories
 - `StoryListViewModel` — déclenchement pagination à N-3, pas de double-load, états d'erreur
 
 ### Snapshot tests (swift-snapshot-testing)
@@ -80,20 +81,21 @@ Fakes écrits à la main (`FakeStoryRepository`, `InMemoryUserStateStore`). Pas 
 
 Volontairement échangés contre une meilleure couverture de tests:
 
-- Matched geometry effect avatar → header viewer
 - Dismiss interactif au swipe (binaire suffit)
 - Transition cube entre users (page transition par défaut)
 - Long-press cache toute l'UI (pause uniquement)
 - Animation de coeur sur double-tap
 - Champ "envoyer un message" en footer
+- Crossfade sur la transition seen/unseen du ring (swap instantané, un test de moins à maintenir)
 
 Conservés (faible coût, gain de qualité perçue):
 
+- **Matched geometry tray avatar → header du viewer** — la transition que les reviewers ressentent le plus, ~1.5h de travail pour le meilleur retour sur qualité perçue
 - Pause sur `scenePhase` non actif
 - Préchargement images via `Nuke prefetch`
-- Crossfade sur la transition seen/unseen du ring
+- Support *reduced motion* (auto-advancing content sans le respecter est rédhibitoire à un niveau senior; ~30 min via les tokens `Motion` du design system)
 - Haptiques sur le like
-- Zones de tap left/right pour navigation
+- Zones de tap (split vertical 1:2, gauche=previous, droite=next — ratio Instagram, forward étant l'action dominante)
 
 ## Choix de dépendances
 
@@ -105,11 +107,12 @@ Conservés (faible coût, gain de qualité perçue):
 
 - Le contenu d'un user est **stable entre les sessions** (mêmes images pour le même user) via `picsum.photos/seed/{stableSeed}`.
 - L'état **seen est par StoryItem**, pas par Story. Le ring reflète l'état "fully seen".
-- Le **seen est marqué au démarrage de la lecture** d'un item (comportement Instagram).
+- Le **seen est marqué après 1.5s de lecture OU sur next-tap explicite**. Un tap-and-dismiss immédiat ne marque rien (sinon le ring grise sans qu'aucun contenu n'ait été vu).
 - Le **like est par StoryItem**. UI optimiste: l'état flippe immédiatement, la persistence suit.
 - **Pagination**: 10 users par page, déclenchée à l'index N-3. Recyclage local du JSON avec IDs suffixés (`alice-p1`, `alice-p2`...).
-- **Auto-advance**: 5s par item. Tap droit = next, tap gauche = previous, long-press = pause, swipe horizontal = next/prev user, swipe down = dismiss.
+- **Auto-advance**: 5s par item. Zones de tap **verticales 1:2** (tiers gauche = previous, deux tiers droits = next, ratio Instagram), long-press = pause, swipe horizontal = next/prev user, swipe down = dismiss.
 - **Pause en background**: le timer s'interrompt quand `scenePhase` n'est pas `.active`.
+- **Échec d'image**: cadre `Surface` avec icône, légende "Couldn't load this story" et bouton `Retry`. L'auto-advance se met en pause sur le cadre d'échec; le tap-forward reste actif. Pas d'haptique, pas d'alerte.
 
 ## Accessibilité
 
@@ -119,8 +122,9 @@ Wins peu coûteux implémentés:
 - `.accessibilityValue("liked" / "not liked")` sur le bouton like
 - Tap targets ≥ 44pt (Apple HIG)
 - Labels VoiceOver sur le bouton de fermeture
+- **Reduced motion** respecté globalement: `Motion.fast/standard/slow` collapsent à `0`, le ring et le like flippent instantanément, l'auto-advance reste actif via un tick discret (sans barre animée). Voir `design.md` → *Motion principles → Reduced motion*.
 
-Skippé (hors scope du test): alternative *reduced motion*, support *Dynamic Type* (l'UI Stories est volontairement à taille fixe).
+Skippé (hors scope du test): support *Dynamic Type* (l'UI Stories est volontairement à taille fixe, comme Instagram), navigation VoiceOver entre items.
 
 ## Usage de l'IA
 
