@@ -23,7 +23,7 @@ Construire une fonctionnalité Stories type Instagram pour une évaluation techn
 
 - Le contenu story d'un user est **stable entre sessions** (mêmes images pour le même user). Utiliser `picsum.photos/seed/{stableSeed}/{w}/{h}`.
 - L'**état seen est par StoryItem**, pas par Story. Une story est "fully seen" quand tous ses items sont vus. Le ring reflète l'état fully-seen.
-- Le **marquage seen se déclenche au (item-start ET elapsed > 1.5s) OU sur next-tap**. Un simple "seen on start" provoque qu'un tap-and-immediately-dismiss marque les items vus avec zéro contenu affiché — perçu comme un bug. Le seuil 1.5s correspond au seuil perceptif de "j'ai vraiment vu quelque chose" ; le chemin next-tap couvre les utilisateurs qui power-skiment les stories d'un user plus vite que 1.5s mais avancent explicitement.
+- **Règle du marquage seen.** Un item est marqué "vu" dans deux cas seulement : soit l'utilisateur l'a regardé au moins **1,5 seconde**, soit il a explicitement tapé "suivant" pour passer à l'item d'après avant ce délai. Ouvrir une story et la fermer en moins de 1,5s sans tap forward **ne la marque pas vue** — sinon le ring passerait au gris alors que l'utilisateur n'a rien vu, ce qui se ressent comme un bug. Le seuil 1,5s correspond au seuil perceptif de "j'ai vraiment eu le temps de voir quelque chose" ; la règle du tap explicite couvre les power-skimers qui parcourent vite les stories d'un même user et auxquels on accorde leur volonté d'avancer.
 - Le **like est par StoryItem**. UI optimiste : l'état flippe instantanément, la persistence suit.
 - **Pagination** : 10 users par page, déclenchée quand on scroll à l'index N-3. Utiliser `onScrollGeometryChange(for: Bool.self)` pour dériver un flag "near end" depuis `contentOffset` / `contentSize` / `containerSize` ; exposer le seuil comme une fonction pure sur `StoryListViewModel` pour qu'il soit unit-testable sans View. Recycle le JSON local avec des IDs suffixés (`alice-p1`, `alice-p2`...).
 - **Auto-advance** : 5s par item. Les zones de tap se découpent **verticalement 1:2** (tiers gauche = previous, deux tiers droits = next, miroir d'Instagram — forward est l'action dominante). Long-press = pause. Swipe horizontal = next/prev user. Swipe down = dismiss.
@@ -34,7 +34,15 @@ Construire une fonctionnalité Stories type Instagram pour une évaluation techn
 
 Le testing est une préoccupation de premier ordre, pas une étape finale. Les tests sont écrits **en parallèle** du code qu'ils couvrent.
 
-### Tests unitaires (XCTest)
+### Tests unitaires & d'intégration (Swift Testing)
+
+Les tests unitaires et d'intégration utilisent **Swift Testing**, pas XCTest. Swift Testing est stable depuis Xcode 16 (sept. 2024) ; en 2026 c'est le framework recommandé par Apple, XCTest étant en mode maintenance. Trois raisons pour lesquelles il colle particulièrement à ce projet :
+
+- **Async-natif** — `await` directement dans les fonctions `@Test`, pas de `XCTestExpectation` / `wait(for:)`. Nos tests `PlaybackController` et `ViewerStateModel` pilotés par `Clock<Duration>` assertent avec un simple `await clock.advance(by:)`.
+- **Tests paramétrés first-class** — `@Test(arguments:)` collapse la matrice du seuil seen-mark (0.5s / 1.4s / 1.5s / 3.0s) en un seul test, au lieu de quatre méthodes quasi-dupliquées.
+- **`#expect` / `#require` montrent l'expression réelle** dans la sortie d'échec, contrairement aux opérandes left/right stringifiés de XCTest.
+
+Choisir XCTest en 2026 sur un projet Swift 6 strict ferait passer un signal "template pas mis à jour" en revue senior, au même titre que cibler iOS 17.
 
 **Doivent être testés** :
 - `PersistedUserStateStore` : round-trip, écritures concurrentes, debounce, survie aux re-init.
@@ -48,7 +56,9 @@ Le testing est une préoccupation de premier ordre, pas une étape finale. Les t
 - Internes du wrapper Nuke (faire confiance à la lib).
 - Timings d'animations SwiftUI (hors scope).
 
-### Snapshot tests (swift-snapshot-testing)
+### Snapshot tests (XCTest + swift-snapshot-testing)
+
+Les snapshots restent sur **XCTest**. `swift-snapshot-testing` v1.x est conçu autour de `XCTestCase` — un companion Swift Testing existe mais le rendu des diffs et messages d'échec est moins lisse en 2026, et l'intégration moins propre. Huit fichiers de snapshots vs ramer contre l'outillage : pas rentable. L'hybride est le choix standard des projets iOS sérieux en 2026 — code nouveau en Swift Testing, snapshots sur XCTest.
 
 Device fixé : iPhone 15 Pro. Versions Xcode/simulator pinnées dans le README. Dark mode uniquement.
 

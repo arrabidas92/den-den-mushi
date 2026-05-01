@@ -23,7 +23,7 @@ Build an Instagram Stories-like feature for a BeReal technical assessment. The p
 
 - A user's story content is **stable across sessions** (same images for same user). Use `picsum.photos/seed/{stableSeed}/{w}/{h}`.
 - **Seen state is per StoryItem**, not per Story. A story is "fully seen" when all items are seen. Ring reflects fully-seen state.
-- **Seen mark fires on (item-start AND elapsed > 1.5s) OR on next-tap**. Plain "seen on start" causes a tap-and-immediately-dismiss to mark items seen with zero content shown — felt as a bug. The 1.5s floor matches the perceptual threshold for "I actually saw something"; the next-tap path covers users who power-skim through a user's stories faster than 1.5s but explicitly advanced.
+- **Seen-marking rule.** An item is marked seen in two cases only: the user watched it for at least **1.5 seconds**, or the user explicitly tapped forward to the next item before that threshold. Opening a story and dismissing it in under 1.5s with no forward tap **does not mark it seen** — otherwise the ring would flip to "viewed" with zero content actually shown, which reads as a bug. The 1.5s floor matches the perceptual threshold for "I actually had time to see something"; the explicit-tap path covers power-skimmers who fly through a single user's stories and whose intent to advance we honour.
 - **Like is per StoryItem**. Optimistic UI: state flips instantly, persistence happens after.
 - **Pagination**: 10 users per page, triggered when scrolling reaches index N-3. Use `onScrollGeometryChange(for: Bool.self)` to derive a "near end" flag from `contentOffset` / `contentSize` / `containerSize`; expose the threshold as a pure function on `StoryListViewModel` so it is unit-testable without a View. Recycles the local JSON with suffixed IDs (`alice-p1`, `alice-p2`...).
 - **Auto-advance**: 5s per item. Tap zones split **1:2 vertically** (left third = previous, right two-thirds = next, mirroring Instagram — forward is the dominant action). Long-press = pause. Swipe horizontal = next/prev user. Swipe down = dismiss.
@@ -34,7 +34,15 @@ Build an Instagram Stories-like feature for a BeReal technical assessment. The p
 
 Testing is a first-class concern, not a final step. Tests are written **alongside** the code they cover.
 
-### Unit tests (XCTest)
+### Unit & integration tests (Swift Testing)
+
+Unit and integration tests use **Swift Testing**, not XCTest. Swift Testing has been stable since Xcode 16 (Sept 2024); in 2026 it is Apple's recommended path forward and XCTest is in maintenance. Three reasons it fits this project specifically:
+
+- **Async-native** — `await` directly inside `@Test` functions, no `XCTestExpectation`/`wait(for:)` dance. Our `Clock<Duration>`-driven `PlaybackController` and `ViewerStateModel` tests assert with plain `await clock.advance(by:)`.
+- **Parametrized tests first-class** — `@Test(arguments:)` collapses the seen-mark threshold matrix (0.5s/1.4s/1.5s/3.0s) to a single test rather than four near-duplicate methods.
+- **`#expect` / `#require` show the actual expression** in failure output, instead of XCTest's stringified left/right operands.
+
+Choosing XCTest in 2026 with a Swift 6 strict project would read as a stale-template signal in senior review, in the same way that targeting iOS 17 would.
 
 **Must test**:
 - `PersistedUserStateStore`: round-trip, concurrent writes, debounce, survival across re-init.
@@ -48,7 +56,9 @@ Testing is a first-class concern, not a final step. Tests are written **alongsid
 - Nuke wrapper internals (trust the library).
 - SwiftUI animation timings (out of scope).
 
-### Snapshot tests (swift-snapshot-testing)
+### Snapshot tests (XCTest + swift-snapshot-testing)
+
+Snapshots stay on **XCTest**. `swift-snapshot-testing` v1.x is built around `XCTestCase` — a Swift Testing companion exists but the diff/failure output is rougher and the integration is less smooth in 2026. Eight snapshot files vs. fighting the tooling: not worth it. Hybrid is the standard choice for serious iOS projects in 2026 — new logic in Swift Testing, snapshots on XCTest.
 
 Pin device: iPhone 15 Pro. Pin Xcode/simulator version in README. Dark mode only.
 

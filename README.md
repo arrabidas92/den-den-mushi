@@ -7,7 +7,7 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 - **Swift** 5.10+, **SwiftUI** en primaire (UIKit uniquement si SwiftUI est insuffisant)
 - **iOS 18.0** minimum — `@Observable` / `Observation` / `@Bindable`, `.navigationTransition(.zoom)` pour la transition tray→viewer, `onScrollGeometryChange` pour le trigger de pagination, isolation `@MainActor` simplifiée des Views sous Swift 6
 - **Swift 6** strict concurrency activé
-- **XCTest** + **swift-snapshot-testing** pour les tests
+- **Swift Testing** pour l'unité et l'intégration, **XCTest** + **swift-snapshot-testing** pour les snapshots
 - **Nuke** pour le chargement d'images
 
 ## Lancer le projet
@@ -55,7 +55,9 @@ Pour le détail des décisions et alternatives écartées (TCA, Clean Arch, Swif
 
 Les tests sont une préoccupation de premier ordre, écrits **en parallèle** du code qu'ils couvrent. Cible: **~80%** sur Domain + ViewModels.
 
-### Tests unitaires (XCTest)
+### Tests unitaires & d'intégration (Swift Testing)
+
+Les tests unitaires et d'intégration utilisent **Swift Testing**, pas XCTest. Stable depuis Xcode 16 (sept. 2024), c'est le framework recommandé par Apple en 2026 — XCTest est en mode maintenance. Pour ce projet, le gain est concret : `await` direct dans les `@Test` (pas de `XCTestExpectation`), `@Test(arguments:)` pour collapser le matrix de seuil seen-mark (0.5s/1.4s/1.5s/3.0s) en un test paramétré au lieu de quatre méthodes copiées-collées, et `#expect` qui affiche l'expression réelle au lieu d'opérandes stringifiés.
 
 - `PersistedUserStateStore` — round-trip, écritures concurrentes, debounce, survie aux re-init
 - `LocalStoryRepository` — pagination, unicité des IDs, déterminisme, parsing JSON
@@ -63,11 +65,13 @@ Les tests sont une préoccupation de premier ordre, écrits **en parallèle** du
 - `ViewerStateModel` — toutes les transitions d'état, marquage seen au seuil de 1.5s OU sur next-tap explicite, like optimiste, dismiss en fin de stories
 - `StoryListViewModel` — déclenchement pagination à N-3, pas de double-load, états d'erreur
 
-### Snapshot tests (swift-snapshot-testing)
+### Snapshot tests (XCTest + swift-snapshot-testing)
 
 Périphérique fixé: **iPhone 15 Pro**, dark mode uniquement.
 
 Couvre `StoryRing`, `StoryAvatar`, `SegmentedProgressBar`, `LikeButton`, `StoryTrayItem`, `StoryViewerHeader`, `StoryViewerPage`, `StoryListView`.
+
+Les snapshots restent sur XCTest : `swift-snapshot-testing` v1.x est conçu autour de `XCTestCase`, et le companion Swift Testing donne des diffs moins lisibles. Hybride = standard pour les projets iOS sérieux en 2026.
 
 ### Test d'intégration
 

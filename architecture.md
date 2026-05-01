@@ -707,7 +707,7 @@ Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 | Concurrency | Swift 6 strict | default | Compile-time correctness, senior signal |
 | DI | constructor | container (Factory, Resolver) | Right-sized for app of this scope |
 | Navigation | `.fullScreenCover` | NavigationStack | Modal semantics match the use case |
-| Test framework | XCTest + snapshot-testing | Quick/Nimble, Swift Testing | Standard, familiar, fast feedback |
+| Test framework | Swift Testing (unit/integration) + XCTest (snapshots) | XCTest only, Quick/Nimble | Async-native, parametrized tests, modern signal; XCTest kept for snapshots because `swift-snapshot-testing` v1.x is built around it |
 
 ## What this architecture is NOT trying to be
 
