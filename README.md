@@ -7,7 +7,7 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 - **Swift** 5.10+, **SwiftUI** en primaire (UIKit uniquement si SwiftUI est insuffisant)
 - **iOS 18.0** minimum — `@Observable` / `Observation` / `@Bindable`, `.navigationTransition(.zoom)` pour la transition tray→viewer, `onScrollGeometryChange` pour le trigger de pagination, isolation `@MainActor` simplifiée des Views sous Swift 6
 - **Swift 6** strict concurrency activé
-- **Swift Testing** pour l'unité et l'intégration, **XCTest** + **swift-snapshot-testing** pour les snapshots
+- **Swift Testing** pour l'unité et l'intégration. Pas de snapshot harness — voir *Contrat visuel* plus bas pour le pourquoi.
 - **Nuke** pour le chargement d'images
 
 ## Lancer le projet
@@ -16,7 +16,7 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 open Stories.xcodeproj
 ```
 
-Puis lancer la cible `Stories` sur un simulateur iPhone 15 Pro (cible recommandée pour la cohérence des snapshots).
+Puis lancer la cible `Stories` sur un simulateur iPhone 15 Pro ou plus récent.
 
 Pour lancer les tests:
 
@@ -65,13 +65,15 @@ Les tests unitaires et d'intégration utilisent **Swift Testing**, pas XCTest. S
 - `ViewerStateModel` — toutes les transitions d'état, marquage seen au seuil de 1.5s OU sur next-tap explicite, like optimiste, dismiss en fin de stories
 - `StoryListViewModel` — déclenchement pagination à N-3, pas de double-load, états d'erreur
 
-### Snapshot tests (XCTest + swift-snapshot-testing)
+### Contrat visuel — `#Preview`, pas snapshot
 
-Périphérique fixé: **iPhone 15 Pro**, dark mode uniquement.
+Les snapshot tests ont été envisagés (`swift-snapshot-testing`, harness XCTest, stub `DataLoader` Nuke en mémoire) puis abandonnés. Blocage mécanique : la lib écrit ses PNG de référence sur un chemin résolu via `#filePath` du fichier source, et la sandbox du simulateur iOS refuse les écritures host hors de son data container. Du coup `xcodebuild test` ne peut pas enregistrer les baselines, et le contournement via variables d'environnement de scheme + dossier accessible host alourdissait le harness plus qu'il ne protégeait le contrat sur un projet mono-auteur.
 
-Couvre `StoryRing`, `StoryAvatar`, `SegmentedProgressBar`, `LikeButton`, `StoryTrayItem`, `StoryViewerHeader`, `StoryViewerPage`, `StoryListView`.
+Ce qui couvre le visuel à la place :
+- Chaque fichier de `DesignSystem/Components/` embarque au moins un bloc `#Preview` qui exerce sa matrice d'états (`.unseen | .seen | .loading` pour le ring, `.notLiked | .liked` pour le like button, `.loaded | .loading | .failed` pour le tray item, etc.). Le reviewer parcourt les previews dans Xcode en quelques secondes.
+- Les tests de stabilité de la couche Data (`LocalStoryRepositoryTests`, `PersistedUserStateStoreTests`) protègent les entrées que le visuel consomme — la divergence visuelle inter-sessions est éliminée à la source plutôt qu'après le pixel.
 
-Les snapshots restent sur XCTest : `swift-snapshot-testing` v1.x est conçu autour de `XCTestCase`, et le companion Swift Testing donne des diffs moins lisibles. Hybride = standard pour les projets iOS sérieux en 2026.
+Si une itération future a besoin de regression pixel, la bonne piste en 2026 est l'API image-snapshot first-party de Swift Testing 6.2, pas un retour de `swift-snapshot-testing` et de ses conflits de sandbox.
 
 ### Test d'intégration
 
@@ -131,7 +133,7 @@ Règle appliquée: **une dépendance se justifie si (1) elle résout un problèm
 - **API SwiftUI native** — `LazyImage` est une vraie `View`, pas un `UIViewRepresentable` bricolé. Lifecycle, transitions et modifiers fonctionnent comme attendu.
 - **`ImagePrefetcher` first-class** — pilotage propre depuis le ViewModel, pas un détail d'implémentation.
 - **`@MainActor` annoté correctement** (Nuke 12+) — colle à notre modèle Swift 6 strict sans `@unchecked Sendable` ni warnings à supprimer.
-- **Pipeline configurable** — un `DataLoader` stub injecté côté tests pour des snapshots hermétiques (cf. `architecture.md` § *Snapshot determinism*).
+- **Pipeline configurable** — utile en cas de besoin futur d'injecter un `DataLoader` stub pour rendre une couche de tests visuels hermétique (non utilisé aujourd'hui, voir *Contrat visuel*).
 - **Petit footprint** — ~200 KB binaire, pas de dépendances Obj-C, build rapide.
 
 **Ce qu'on évite côté usage de Nuke:**
@@ -140,19 +142,9 @@ Règle appliquée: **une dépendance se justifie si (1) elle résout un problèm
 - Le wrapper qu'on a (`ImageLoader.configure()` + `ImagePrefetchHandle`) ne fait que deux choses: (1) configurer le pipeline une seule fois, (2) tenir un handle de prefetch dont la durée de vie est liée à un écran (cancellation propre).
 - Pas de bundling d'images en assets — le spec exige `picsum.photos/seed/{stableSeed}` pour la stabilité inter-sessions, ce qui implique le réseau et donc une vraie pipeline.
 
-### swift-snapshot-testing (test target uniquement)
+### Pas de seconde dépendance
 
-Référence dans l'écosystème iOS pour les snapshots. Permet de figer l'apparence des composants et de détecter les régressions visuelles sans tooling maison.
-
-**Alternatives écartées:**
-
-| Option | Verdict | Raison |
-|---|---|---|
-| iOS 16+ `ImageRenderer` à la main | ❌ | Permet de générer un PNG depuis une `View`, mais il faut écrire soi-même: la comparaison pixel-à-pixel, le rapport de diff visuel, la gestion des références par device/scale, l'intégration XCTest. C'est précisément ce que la lib offre prêt à l'emploi. |
-| Tests UI XCUITest avec captures | ❌ | Trop lent (boot simulator, navigation), trop fragile (timing, animations), inadapté à des composants isolés. |
-| Pas de snapshot tests | ❌ | Casserait l'objectif "test coverage first-class" du brief. Les composants design (rings, progress bar, like button) sont pile le profil où le snapshot vaut une page de tests d'unitaires sur du layout. |
-
-`swift-snapshot-testing` est au test target uniquement — aucune surface de production n'en dépend, donc le risque "lib abandonnée" est nul: au pire on freeze la version, les tests continuent de tourner.
+`swift-snapshot-testing` était initialement la seconde lib retenue (test target uniquement). Elle a été retirée à la Phase 3 du build sur le blocage sandbox iOS simulator décrit en *Contrat visuel* — le contrat est désormais porté par les `#Preview` de chaque composant + les tests Data, sans lib supplémentaire. Une seule dépendance runtime (Nuke) en 2026 est un signal de discipline plutôt qu'une lacune.
 
 ## Choix de persistence
 

@@ -74,16 +74,6 @@ StoriesTests/
 │   ├── StoryListViewModelTests.swift
 │   ├── PlaybackControllerTests.swift
 │   └── ViewerStateModelTests.swift
-├── Snapshot/
-│   ├── StoryRingSnapshotTests.swift
-│   ├── StoryAvatarSnapshotTests.swift
-│   ├── SegmentedProgressBarSnapshotTests.swift
-│   ├── LikeButtonSnapshotTests.swift
-│   ├── StoryTrayItemSnapshotTests.swift
-│   ├── StoryViewerHeaderSnapshotTests.swift
-│   ├── StoryViewerPageSnapshotTests.swift
-│   ├── StoryListViewSnapshotTests.swift
-│   └── __Snapshots__/                    // PNGs générés
 ├── Integration/
 │   └── StoryFlowIntegrationTests.swift
 └── TestSupport/
@@ -741,16 +731,15 @@ Reduced motion et Dynamic Type sont explicitement hors scope (CLAUDE.md).
 
 Un vrai produit Stories accepterait `bereal://story/{userID}/item/{itemID}` et ouvrirait le viewer pré-positionné. L'architecture le supporte à bas coût : le ViewModel viewer prend déjà `(users, startUserIndex, startItemIndex)`. Un handler `URL` dans `StoriesApp` mapperait le link à ces paramètres et présenterait le cover. Non implémenté pour le test ; flaggé dans le README comme un skip délibéré.
 
-## Déterminisme des snapshots
+## Contrat visuel : previews à la place des snapshot tests
 
-Les snapshots qui incluent des composants de chargement d'image (`StoryAvatar`, `StoryTrayItem`, `StoryViewerPage`, `StoryListView`) ne peuvent pas s'appuyer sur de vrais fetchs réseau — les tests seraient flaky et lents.
+Les snapshot tests ont été envisagés (`swift-snapshot-testing`, harness XCTest, stub `DataLoader` Nuke en mémoire) puis abandonnés. Blocage mécanique : la lib écrit ses PNG de référence sur un chemin résolu via `#filePath` du fichier source, et la sandbox du simulateur iOS refuse les écritures host hors de son data container — donc les runs `xcodebuild test` ne peuvent pas enregistrer les baselines, et le contournement par variable d'env de scheme ajoutait plus de harness que le contrat ne le valait sur un projet mono-auteur.
 
-Stratégie :
-- Injecter une source d'image stub dans l'`ImagePipeline` de Nuke pour le test target uniquement, via un `DataLoader` qui retourne un payload PNG fixe en mémoire pour n'importe quelle URL. Configuré une fois dans un test bootstrap.
-- Les helpers de snapshot attendent un tick de runloop après l'apparition de la View pour que `LazyImage` résolve contre le stub avant que le snapshot ne se déclenche.
-- Pin : iPhone 15 Pro, simulator iOS 18.x, Xcode 16.x. Enregistré dans le README du test target.
+Le contrat visuel est porté de deux façons à la place :
+- Chaque fichier de composant dans `DesignSystem/Components/` embarque au moins un bloc `#Preview` qui exerce sa matrice d'états nommée (seen / unseen / loading / failed, variantes de density, liked / not-liked, etc.). Les reviewers parcourent les previews dans Xcode en quelques secondes.
+- Les tests de stabilité de la couche Data (`LocalStoryRepositoryTests`, `PersistedUserStateStoreTests`) protègent les entrées que le visuel consomme — la divergence visuelle inter-sessions est éliminée à la source plutôt qu'après le pixel.
 
-Résultat : les snapshot tests sont hermétiques, déterministes, et tournent en <1s chacun.
+Si une itération future a besoin de regression pixel, la bonne piste en 2026 est l'API image-snapshot first-party de Swift Testing 6.2, pas un retour à `swift-snapshot-testing` et à ses conflits de sandbox.
 
 ## Modularité : pourquoi pas de SPM
 
@@ -799,7 +788,7 @@ Le bénéfice unique d'un SPM ici serait *forcer mécaniquement* qu'aucun import
 | Concurrence | Swift 6 strict | défaut | Correction au compile time, signal senior |
 | DI | constructor | container (Factory, Resolver) | Bien dimensionné pour une app de cette échelle |
 | Navigation | `.fullScreenCover` | NavigationStack | La sémantique modale matche le use case |
-| Framework de test | Swift Testing (unit/intégration) + XCTest (snapshots) | XCTest seul, Quick/Nimble | Async-natif, tests paramétrés, signal moderne ; XCTest gardé pour les snapshots car `swift-snapshot-testing` v1.x est construit autour |
+| Framework de test | Swift Testing (unit/intégration), pas de harness snapshot | XCTest seul, Quick/Nimble | Async-natif et paramétré — signal senior moderne. Snapshot tests abandonnés sur le blocage sandbox simulateur iOS ; la revue visuelle pilotée par `#Preview` couvre la surface à la place (cf. *Contrat visuel* plus haut) |
 
 ## Ce que cette architecture N'essaie PAS d'être
 

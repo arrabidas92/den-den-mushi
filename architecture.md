@@ -74,16 +74,6 @@ StoriesTests/
 │   ├── StoryListViewModelTests.swift
 │   ├── PlaybackControllerTests.swift
 │   └── ViewerStateModelTests.swift
-├── Snapshot/
-│   ├── StoryRingSnapshotTests.swift
-│   ├── StoryAvatarSnapshotTests.swift
-│   ├── SegmentedProgressBarSnapshotTests.swift
-│   ├── LikeButtonSnapshotTests.swift
-│   ├── StoryTrayItemSnapshotTests.swift
-│   ├── StoryViewerHeaderSnapshotTests.swift
-│   ├── StoryViewerPageSnapshotTests.swift
-│   ├── StoryListViewSnapshotTests.swift
-│   └── __Snapshots__/                    // generated PNGs
 ├── Integration/
 │   └── StoryFlowIntegrationTests.swift
 └── TestSupport/
@@ -739,16 +729,15 @@ Reduced motion and Dynamic Type are explicitly out of scope (CLAUDE.md).
 
 A real Stories product would accept `bereal://story/{userID}/item/{itemID}` and open the viewer pre-positioned. The architecture supports it cheaply: the viewer ViewModel already takes `(users, startUserIndex, startItemIndex)`. A `URL` handler in `StoriesApp` would map the link to those parameters and present the cover. Not implemented for the test; flagged in the README as a deliberate skip.
 
-## Snapshot determinism
+## Visual contract: previews instead of snapshot tests
 
-Snapshots that include image-loading components (`StoryAvatar`, `StoryTrayItem`, `StoryViewerPage`, `StoryListView`) cannot rely on real network fetches — tests would be flaky and slow.
+Snapshot tests were considered (`swift-snapshot-testing`, XCTest harness, in-memory `DataLoader` stub for Nuke) and dropped. The blocker is mechanical: the library writes reference PNGs to a path resolved from `#filePath` of the test source, and the iOS simulator's sandbox refuses host writes outside its data container — so `xcodebuild test` runs cannot record baselines, and the per-scheme env-var workaround proved more harness than the contract was worth on a single-author project.
 
-Strategy:
-- Inject a stub image source into Nuke's `ImagePipeline` for the test target only, via a `DataLoader` that returns a fixed in-memory PNG payload for any URL. Configured once in a test bootstrap.
-- Snapshot helpers wait one runloop tick after the View appears so `LazyImage` resolves against the stub before the snapshot fires.
-- Pin: iPhone 15 Pro, iOS 18.x simulator, Xcode 16.x. Recorded in the test target's README.
+The visual contract is enforced two ways instead:
+- Every component file in `DesignSystem/Components/` ships at least one `#Preview` block that exercises its named state matrix (seen / unseen / loading / failed, density variants, liked / not-liked, etc.). Reviewers walk the previews in Xcode in seconds.
+- The data layer's stability tests (`LocalStoryRepositoryTests`, `PersistedUserStateStoreTests`) protect the inputs the visual layer consumes, so visual divergence between sessions is ruled out at the source rather than after the pixel.
 
-Result: snapshot tests are hermetic, deterministic, and run in <1s each.
+If a future iteration needs pixel-level regression coverage, the right path in 2026 is Swift Testing 6.2's first-party image-snapshot API rather than re-introducing `swift-snapshot-testing` and its sandbox conflicts.
 
 ## Modularity: why no SPM
 
@@ -797,7 +786,7 @@ The unique benefit of SPM here would be *mechanically forcing* that no `SwiftUI`
 | Concurrency | Swift 6 strict | default | Compile-time correctness, senior signal |
 | DI | constructor | container (Factory, Resolver) | Right-sized for app of this scope |
 | Navigation | `.fullScreenCover` | NavigationStack | Modal semantics match the use case |
-| Test framework | Swift Testing (unit/integration) + XCTest (snapshots) | XCTest only, Quick/Nimble | Async-native, parametrized tests, modern signal; XCTest kept for snapshots because `swift-snapshot-testing` v1.x is built around it |
+| Test framework | Swift Testing (unit/integration), no snapshot harness | XCTest only, Quick/Nimble | Async-native and parametrized — modern senior signal. Snapshot tests dropped on the iOS simulator sandbox blocker; `#Preview`-driven visual review covers the surface instead (see *Visual contract* above) |
 
 ## What this architecture is NOT trying to be
 

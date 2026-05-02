@@ -14,9 +14,9 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
 **Goal:** an Xcode project that compiles, with tests included, dependencies added, local CI green.
 
 1. Create the Xcode project `Stories` (iOS app, SwiftUI, iOS 18 minimum, Swift 6 strict mode, **Default Actor Isolation = MainActor**).
-2. Create the targets: `Stories` (app) and `StoriesTests` (mixed Swift Testing + XCTest).
+2. Create the targets: `Stories` (app) and `StoriesTests` (Swift Testing only — no XCTest layer needed once snapshot tests are dropped).
 3. Add `Nuke` via SPM (app target only).
-4. Add `swift-snapshot-testing` via SPM (test target only).
+4. *(removed: `swift-snapshot-testing` — see CLAUDE.md "Testing strategy" / architecture.md "Visual contract" for the rationale.)*
 5. Create the exact folder structure from `architecture.md` § *Folder structure* (empty, with a `.gitkeep` if needed).
 6. Configure Xcode coverage **only** for `Domain/` and the ViewModels (`StoryListViewModel`, `ViewerStateModel`, `PlaybackController`) at the scheme level.
 7. Add a minimal `stories.json` (5–7 users, 2–4 items each, `picsum.photos/seed/...` URLs) under `Data/Resources/`.
@@ -65,9 +65,9 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
 
 **Gate:** all Data tests green; Domain + Data coverage ≥ 80% on the critical paths.
 
-## Phase 3 — DesignSystem (tokens + components) + snapshots (~2h30)
+## Phase 3 — DesignSystem (tokens + components) (~1h30)
 
-**Goal:** complete visual kit, previewable, snapshotted. No dependency on ViewModels.
+**Goal:** complete visual kit, previewable in Xcode. No dependency on ViewModels.
 
 1. `DesignSystem/Tokens/Colors.swift` — extension `Color` with every token from `design.md`.
 2. `DesignSystem/Tokens/Typography.swift` — extension `Font` with the 6 named styles.
@@ -80,15 +80,9 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
 9. `DesignSystem/Components/LikeButton.swift` — heart, internal spring + haptic on tap. Preview.
 10. `DesignSystem/Components/StoryTrayItem.swift` — `StoryTrayItemState` enum, density. Preview with all 3 states.
 11. `Core/Haptics.swift` — minimal UIKit wrapper.
-12. **Snapshots** (XCTest, iPhone 15 Pro, dark mode):
-    - `StoryRingSnapshotTests` — seen/unseen/loading × 2 sizes
-    - `StoryAvatarSnapshotTests` — seen/unseen/loading/failed
-    - `SegmentedProgressBarSnapshotTests` — count × progress × currentIndex combinations
-    - `LikeButtonSnapshotTests` — liked/not liked
-    - `StoryTrayItemSnapshotTests` — seen/unseen/long username/short/loading/failed
-    - Snapshot bootstrap: inject a Nuke `DataLoader` returning an in-memory PNG (determinism).
+12. **`#Preview` matrix** — every component file ships at least one `#Preview` block exercising its full state set (`.unseen | .seen | .loading` for the ring, `.notLiked | .liked` for the like button, `.loaded | .loading | .failed` for the tray item, etc.). This replaces the snapshot suite originally planned here; rationale lives in CLAUDE.md "Testing strategy" and architecture.md "Visual contract".
 
-**Gate:** every component appears in previews with its variants; all snapshots pass at `record=false` after a hand-reviewed initial baseline.
+**Gate:** every component appears in previews with its variants and renders correctly in dark mode in Xcode's preview canvas.
 
 ## Phase 4 — StoryList feature (~2h)
 
@@ -111,7 +105,7 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
    - `.onScrollGeometryChange(for: Bool.self)` → `viewModel.shouldLoadMore(...)`
    - trailing skeleton when `isLoadingMore`, trailing failure on error
    - `@Namespace` for `matchedTransitionSource`
-4. `StoryListViewSnapshotTests.swift` — list with mixed seen/unseen + trailing skeleton.
+4. *(removed: snapshot suite dropped — list states are exercised via `#Preview` in `StoryListView.swift`.)*
 
 **Gate:** the app shows the tray, scrolls, loads pages 1/2/3, displays the skeleton during load, retry works on error (force an error in `FakeStoryRepository` to verify visually). Tests green.
 
@@ -155,7 +149,7 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
 
 **Goal:** assemble the viewer on top of the validated engine.
 
-1. `Components/StoryViewerHeader.swift` + snapshot tests (recent/old timestamp).
+1. `Components/StoryViewerHeader.swift` (with `#Preview` for recent / old timestamp variants).
 2. `Components/StoryViewerFooter.swift` (LikeButton + optionally a disabled/skipped input field).
 3. `Components/StoryViewerPage.swift`:
    - `LazyImage` Nuke with `onCompletion` → `.failed(retry:)`
@@ -173,7 +167,7 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
    - `.onDisappear` → `await store.flushNow()`
    - `.navigationTransition(.zoom(sourceID:in:))`
 5. Wiring `.fullScreenCover` from `StoryListView` on item tap.
-6. `StoryViewerPageSnapshotTests` (one-shot integration snapshot).
+6. *(removed: viewer-page snapshot test dropped — full viewer is exercised via `#Preview` in `StoryViewerView.swift`.)*
 
 **Gate:** full manual demo — zoom open transition, auto-advance, tap forward/back, long-press chrome hide, double-tap heart, interactive swipe-down dismiss, horizontal user swipe, scenePhase pause (Home → return), seen/like persistence (kill app → relaunch).
 
@@ -205,4 +199,4 @@ Implementation plan for the BeReal Stories test. Companion to `architecture.md` 
 
 - **`onScrollGeometryChange` + horizontal `LazyHStack`.** API is stable but the `nearEnd` derivation may fire too early depending on `itemExtent`. Plan B documented: fall back to the last `StoryTrayItem.onAppear` if the API misbehaves in practice.
 - **`.navigationTransition(.zoom)` outside `NavigationStack`.** Combination with `.fullScreenCover` is supported but worth verifying early (phase 6); if KO, fall back to `matchedGeometryEffect` (~30 extra lines, accepted as a documented trade-off).
-- **Deterministic snapshots.** Inject the Nuke `DataLoader` from phase 3 onward — otherwise snapshots fail in CI without network.
+- *(snapshot risk removed alongside the snapshot suite itself — `#Preview`-driven visual review has no determinism prerequisites.)*

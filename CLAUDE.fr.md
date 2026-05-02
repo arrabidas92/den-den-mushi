@@ -13,7 +13,7 @@ Construire une fonctionnalité Stories type Instagram pour une évaluation techn
 - **Langage** : Swift 5.10+, SwiftUI en primaire. UIKit uniquement quand SwiftUI est réellement insuffisant.
 - **Cible iOS** : 18.0 minimum. Utiliser `@Observable`, framework `Observation`, `@Bindable`. Ne PAS utiliser `ObservableObject` / `@Published`. iOS 18 débloque trois APIs qu'on utilise directement : `.matchedTransitionSource` + `.navigationTransition(.zoom)` pour la transition tray-avatar→viewer header, `onScrollGeometryChange` pour le trigger de pagination N-3, et l'isolation `@MainActor`-par-défaut des Views relâchée sous Swift 6 strict concurrency. Cibler iOS 17 en 2026 sans raison de compensation est un signal "template pas mis à jour" en revue senior.
 - **Concurrence** : Swift 6 strict mode activé. Tout est `Sendable` ou marqué explicitement. Les repositories et stores sont des `actor`s. Les ViewModels sont `@MainActor`.
-- **Bibliothèques externes** : uniquement `Nuke` (chargement d'images) et `swift-snapshot-testing` (test target uniquement). Toute autre dépendance doit être justifiée à l'utilisateur avant ajout.
+- **Bibliothèques externes** : uniquement `Nuke` (chargement d'images). Toute autre dépendance doit être justifiée à l'utilisateur avant ajout.
 - **Persistence** : `actor` + Codable JSON via `FileManager`. Pas de SwiftData, pas d'`UserDefaults` pour l'état, pas de Core Data.
 - **Pas de logique métier dans les Views**. Les Views lisent depuis des view models `@Observable` et dispatchent des intents.
 - **Pas de singletons**. Dépendances passées via init.
@@ -49,7 +49,7 @@ Choisir XCTest en 2026 sur un projet Swift 6 strict ferait passer un signal "tem
 - `PersistedUserStateStore` — round-trip, écritures concurrentes, debounce, survie aux re-init.
   *Risque couvert : un seen ou un like mal persisté = ring qui re-passe à "unseen" ou cœur qui se vide après relance. C'est le bug le plus visible côté utilisateur, et le seul que l'évaluateur peut reproduire en tuant l'app.*
 - `LocalStoryRepository` — nombre de pages, unicité des IDs entre pages, sortie déterministe, parsing JSON.
-  *Risque couvert : deux items avec le même ID = persistence corrompue (l'état seen d'un item écrase un autre). Sortie non-déterministe = tests snapshot flaky et stabilité inter-sessions cassée.*
+  *Risque couvert : deux items avec le même ID = persistence corrompue (l'état seen d'un item écrase un autre). Une sortie non-déterministe casse aussi la stabilité inter-sessions — le même utilisateur doit montrer les mêmes items entre lancements.*
 - `PlaybackController` — avance des ticks, pause/resume préserve la progression, restart sur changement d'item reset à 0, scenePhase pause stoppe les ticks et reprend depuis le même offset.
   *Risque couvert : timer qui dérive en background = items marqués seen sans que l'utilisateur les ait vus. Reset manqué = barre de progression qui démarre au milieu sur l'item suivant.*
 - `ViewerStateModel` — toutes les transitions d'état (next/prev item, next/prev user, dismiss en fin), le marquage seen ne se déclenche qu'après 1.5s OU sur next-tap explicite, le like optimiste flippe l'état avant la fin de la persistence.
@@ -60,27 +60,9 @@ Choisir XCTest en 2026 sur un projet Swift 6 strict ferait passer un signal "tem
   *Risque couvert : double-load = pages dupliquées dans la liste (et IDs en collision côté store). Trigger trop tardif = scroll qui bute sur la fin avant l'arrivée de la page suivante.*
 
 **Non testé** (mentionné dans le README) :
-- Pure View layouts (couvert par les snapshots).
+- Pure View layouts. Les tests snapshot ont été envisagés puis abandonnés — `swift-snapshot-testing` exige d'écrire les PNG de référence sur un chemin host que la sandbox du simulateur iOS bloque, donc les runs `xcodebuild test` ne peuvent pas enregistrer les baselines. Les contournements (variables d'env injectées par scheme + dossier accessible host) ajoutaient plus de harness qu'ils ne protégeaient le contrat. Le contrat visuel est porté par les SwiftUI previews par composant (chaque fichier de composant embarque un bloc `#Preview` avec sa matrice d'états nommée) et revu manuellement ; la couverture reste sur la logique qui peut casser silencieusement. Si une itération future a besoin de regression sur le visuel, l'API image-snapshot first-party de Swift Testing 6.2 remplacerait `swift-snapshot-testing` entièrement.
 - Internes du wrapper Nuke (faire confiance à la lib).
 - Timings d'animations SwiftUI (hors scope).
-
-### Snapshot tests (XCTest + swift-snapshot-testing)
-
-Les snapshots restent sur **XCTest**. `swift-snapshot-testing` v1.x est conçu autour de `XCTestCase` — un companion Swift Testing existe mais le rendu des diffs et messages d'échec est moins lisse en 2026, et l'intégration moins propre. Huit fichiers de snapshots vs ramer contre l'outillage : pas rentable. L'hybride est le choix standard des projets iOS sérieux en 2026 — code nouveau en Swift Testing, snapshots sur XCTest.
-
-Device fixé : iPhone 15 Pro. Versions Xcode/simulator pinnées dans le README. Dark mode uniquement.
-
-**Snapshotté** :
-- `StoryRing` — seen / unseen / loading, plusieurs tailles
-- `StoryAvatar` — seen / unseen / loading / fallback image-fail
-- `SegmentedProgressBar` — 1, 3, 5 segments × progress 0/50/100 × variations de currentIndex
-- `LikeButton` — liked / not liked
-- `StoryTrayItem` — seen / unseen / username long / username court
-- `StoryViewerHeader` — timestamp récent / ancien
-- `StoryViewerPage` — un snapshot d'intégration de la page viewer complète
-- `StoryListView` — liste complète avec mix d'états seen/unseen
-
-**Non snapshotté** : états d'animation transitoires, écrans dépendant du réseau.
 
 ### Test d'intégration (léger)
 
@@ -88,7 +70,7 @@ Un scénario VM end-to-end : charger la liste → ouvrir le user 3 → voir 2 it
 
 ### Cible de couverture
 
-Viser **~80% sur les targets Domain + ViewModels uniquement**, pas sur l'app globale. Le code de View est intentionnellement non couvert (cf. snapshots).
+Viser **~80% sur les targets Domain + ViewModels uniquement**, pas sur l'app globale. Le code de View est intentionnellement non couvert (le contrat visuel est porté par les blocs `#Preview`, voir plus haut).
 
 **Pourquoi pas 100%** — Views, wrapper Nuke et timings d'animation sont hors scope par décision (voir "Non testé" plus haut). Mesurer la couverture sur l'app entière dilue le chiffre artificiellement et masque ce qui compte vraiment.
 
@@ -137,7 +119,6 @@ Conservé (faible coût, gain de qualité perçue élevé) :
 - Ne pas utiliser `Timer.scheduledTimer`. Utiliser `Task` + `try await Task.sleep(for:)`.
 - Ne pas implémenter de fonctionnalités au-delà du spec.
 - Ne pas écrire de test qui ne fait que ré-asserter ce que le système de types impose déjà.
-- Ne pas snapshotter d'états qui dépendent du réseau ou du timing d'animation.
 
 ## En cas de doute
 

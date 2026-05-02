@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		E5AFB7DA2FA5CB320087D386 /* Nuke in Frameworks */ = {isa = PBXBuildFile; productRef = E5AFB7D92FA5CB320087D386 /* Nuke */; };
 		E5AFB7DC2FA5CB320087D386 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = E5AFB7DB2FA5CB320087D386 /* NukeUI */; };
-		E5AFB7DF2FA5CBAB0087D386 /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = E5AFB7DE2FA5CBAB0087D386 /* SnapshotTesting */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,7 +53,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E5AFB7DF2FA5CBAB0087D386 /* SnapshotTesting in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -123,9 +121,6 @@
 				E5AFB7862FA5C9130087D386 /* StoriesTests */,
 			);
 			name = StoriesTests;
-			packageProductDependencies = (
-				E5AFB7DE2FA5CBAB0087D386 /* SnapshotTesting */,
-			);
 			productName = StoriesTests;
 			productReference = E5AFB7832FA5C9130087D386 /* StoriesTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -160,7 +155,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E5AFB7D82FA5CB320087D386 /* XCRemoteSwiftPackageReference "Nuke" */,
-				E5AFB7DD2FA5CBAB0087D386 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E5AFB7772FA5C9110087D386 /* Products */;
@@ -498,14 +492,6 @@
 				minimumVersion = 12.0.0;
 			};
 		};
-		E5AFB7DD2FA5CBAB0087D386 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.17.0;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -518,11 +504,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E5AFB7D82FA5CB320087D386 /* XCRemoteSwiftPackageReference "Nuke" */;
 			productName = NukeUI;
-		};
-		E5AFB7DE2FA5CBAB0087D386 /* SnapshotTesting */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = E5AFB7DD2FA5CBAB0087D386 /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
-			productName = SnapshotTesting;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -13,7 +13,7 @@ Build an Instagram Stories-like feature for a BeReal technical assessment. The p
 - **Language**: Swift 5.10+, SwiftUI primary. UIKit only when SwiftUI is genuinely insufficient.
 - **iOS target**: 18.0 minimum. Use `@Observable`, `Observation` framework, `@Bindable`. Do NOT use `ObservableObject` / `@Published`. iOS 18 unlocks three APIs we use directly: `.matchedTransitionSource` + `.navigationTransition(.zoom)` for the tray-avatar→viewer transition, `onScrollGeometryChange` for the pagination N-3 trigger, and the relaxed `@MainActor`-by-default View isolation under Swift 6 strict concurrency. Targeting 17 in 2026 with no compensating reason is a stale-template signal in senior review.
 - **Concurrency**: Swift 6 strict mode enabled. Everything is `Sendable` or explicitly marked. Repositories and stores are `actor`s. ViewModels are `@MainActor`.
-- **External libraries**: only `Nuke` (image loading) and `swift-snapshot-testing` (test target only). Any other dependency must be justified to the user before adding.
+- **External libraries**: only `Nuke` (image loading). Any other dependency must be justified to the user before adding.
 - **Persistence**: `actor` + Codable JSON via `FileManager`. No SwiftData, no UserDefaults for state, no Core Data.
 - **No business logic in Views**. Views read from `@Observable` view models and dispatch intents.
 - **No singletons**. Dependencies passed via init.
@@ -49,7 +49,7 @@ Choosing XCTest in 2026 with a Swift 6 strict project would read as a stale-temp
 - `PersistedUserStateStore` — round-trip, concurrent writes, debounce, survival across re-init.
   *Risk covered: a mis-persisted seen or like = ring flipping back to "unseen" or heart emptying after relaunch. The most user-visible bug, and the only one the reviewer can reproduce by killing the app.*
 - `LocalStoryRepository` — page count, ID uniqueness across pages, deterministic output, JSON parse.
-  *Risk covered: two items sharing an ID = corrupted persistence (one item's seen state overwrites another). Non-deterministic output = flaky snapshot tests and broken cross-session stability.*
+  *Risk covered: two items sharing an ID = corrupted persistence (one item's seen state overwrites another). Non-deterministic output also breaks cross-session stability — the same user must show the same items across launches.*
 - `PlaybackController` — tick advance, pause/resume preserves progress, restart on item change resets to 0, scenePhase pause halts ticks and resumes from same offset.
   *Risk covered: timer drifting in background = items marked seen the user never saw. Missed reset = progress bar starts mid-bar on the next item.*
 - `ViewerStateModel` — all state transitions (next/prev item, next/prev user, dismiss on end), seen marking fires only after 1.5s OR on explicit next-tap, optimistic like flips state before persistence completes.
@@ -60,27 +60,9 @@ Choosing XCTest in 2026 with a Swift 6 strict project would read as a stale-temp
   *Risk covered: double-load = duplicated pages in the list (and ID collisions in the store). Late trigger = scroll hits the end before the next page arrives.*
 
 **Not tested** (mention in README):
-- Pure View layouts (covered by snapshots).
+- Pure View layouts. Snapshot tests were considered and dropped — `swift-snapshot-testing` requires writing reference PNGs to a host path the iOS simulator's sandbox blocks, so xcodebuild CLI runs cannot record baselines. The workarounds (per-scheme env var injection plus a host-writable directory) added more harness than they protected. The visual contract is enforced by SwiftUI previews per component (every component file ships a `#Preview` block with its named state matrix) and reviewed manually; coverage stays on the logic that can break silently. If a future iteration needs regression on visuals, `@Test` from Swift Testing 6.2's image-snapshot API would replace `swift-snapshot-testing` entirely.
 - Nuke wrapper internals (trust the library).
 - SwiftUI animation timings (out of scope).
-
-### Snapshot tests (XCTest + swift-snapshot-testing)
-
-Snapshots stay on **XCTest**. `swift-snapshot-testing` v1.x is built around `XCTestCase` — a Swift Testing companion exists but the diff/failure output is rougher and the integration is less smooth in 2026. Eight snapshot files vs. fighting the tooling: not worth it. Hybrid is the standard choice for serious iOS projects in 2026 — new logic in Swift Testing, snapshots on XCTest.
-
-Pin device: iPhone 15 Pro. Pin Xcode/simulator version in README. Dark mode only.
-
-**Snapshotted**:
-- `StoryRing` — seen / unseen / loading, multiple sizes
-- `StoryAvatar` — seen / unseen / loading / image-fail fallback
-- `SegmentedProgressBar` — 1, 3, 5 segments × progress 0/50/100 × currentIndex variations
-- `LikeButton` — liked / not liked
-- `StoryTrayItem` — seen / unseen / long username / short username
-- `StoryViewerHeader` — recent / old timestamp
-- `StoryViewerPage` — single integration snapshot of the full viewer page
-- `StoryListView` — full list with mixed seen/unseen states
-
-**Not snapshotted**: transient animation states, network-dependent screens.
 
 ### Integration test (light)
 
@@ -88,7 +70,7 @@ One end-to-end VM scenario: load list → open user 3 → view 2 items → dismi
 
 ### Coverage target
 
-Aim for **~80% on the Domain + ViewModels targets only**, not on the app overall. View code is intentionally uncovered (see snapshots).
+Aim for **~80% on the Domain + ViewModels targets only**, not on the app overall. View code is intentionally uncovered (visual contract is enforced via `#Preview` blocks, see above).
 
 **Why not 100%** — Views, the Nuke wrapper, and animation timings are out of scope by design (see "Not tested" above). Measuring coverage on the whole app dilutes the number artificially and hides what actually matters.
 
@@ -137,7 +119,6 @@ Kept (low cost, high perceived quality):
 - Do not use `Timer.scheduledTimer`. Use `Task` + `try await Task.sleep(for:)`.
 - Do not implement features beyond the spec.
 - Do not write a test that just re-asserts what the type system already enforces.
-- Do not snapshot states that depend on network or animation timing.
 
 ## When in doubt
 
