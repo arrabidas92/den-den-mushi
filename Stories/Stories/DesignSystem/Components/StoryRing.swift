@@ -26,7 +26,7 @@ struct StoryRing: View {
 
     var body: some View {
         Circle()
-            .stroke(strokeColor, lineWidth: lineWidth)
+            .strokeBorder(strokeColor, lineWidth: lineWidth)
             .frame(width: size, height: size)
             .opacity(pulseOpacity)
             .onAppear { startPulseIfLoading() }

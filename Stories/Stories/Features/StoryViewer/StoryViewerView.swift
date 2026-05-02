@@ -1,15 +1,17 @@
 import SwiftUI
 
 /// Modal viewer presented over the tray. Owns the chrome (header, footer,
-/// progress bar), the user-pagination drag, the scenePhase pause hook,
-/// and the swipe-down dismiss visual envelope (background fade). Per-page
-/// behaviour (image, tap zones, long-press, double-tap, vertical drag)
-/// lives in `StoryViewerPage`.
+/// progress bar), the unified drag gesture (axis-locked between
+/// horizontal user-pagination and vertical swipe-to-dismiss), and the
+/// scenePhase pause hook. Per-page behaviour (image, tap zones, long-press,
+/// double-tap) lives in `StoryViewerPage`.
 ///
-/// The View owns *no* business logic — every state mutation routes
-/// through `ViewerStateModel`. The thresholds and indices for the
-/// horizontal-swipe commit are local UI state because they describe an
-/// in-flight drag, not durable state.
+/// Why a single unified DragGesture: nesting a vertical drag on each page
+/// underneath a horizontal drag on the pager produced a race where the
+/// inner gesture would steal a partly-horizontal swipe — the user's
+/// intended user-pagination swipe ended up doing nothing. One gesture at
+/// the top, axis-locked at first engagement, removes the ambiguity and
+/// keeps the page free to handle taps, double-taps, and long-press.
 struct StoryViewerView: View {
 
     @Bindable var state: ViewerStateModel
@@ -48,12 +50,22 @@ struct StoryViewerView: View {
             ZStack {
                 background
                 pagedStack(containerSize: geo.size)
-                    .gesture(horizontalDragGesture(containerWidth: geo.size.width))
                 chrome
                     .opacity(state.isImmersive ? 0 : 1)
                     .animation(Motion.fastAnimation(reduceMotion: reduceMotion), value: state.isImmersive)
+                    // Item / user changes mutate the chrome's inputs (avatar,
+                    // username, segment count). Without this transaction the
+                    // SwiftUI animation context propagated by gestures bleeds
+                    // into those mutations and produces a quick crossfade —
+                    // perceived as a flicker on the close, like, and avatar
+                    // glyphs. Chrome content is discrete: we want a hard swap.
+                    .transaction(value: state.currentItemIndex) { $0.animation = nil }
+                    .transaction(value: state.currentUserIndex) { $0.animation = nil }
+                    .allowsHitTesting(!state.isImmersive)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .contentShape(Rectangle())
+            .simultaneousGesture(unifiedDragGesture(containerSize: geo.size))
         }
         .background(Color.background.opacity(1.0 - state.dragProgress))
         .ignoresSafeArea(edges: .horizontal)
@@ -108,13 +120,21 @@ struct StoryViewerView: View {
                     isActive: index == state.currentUserIndex,
                 )
                 .frame(width: width, height: containerSize.height)
+                // Adjacent pages render with a parallax tint *only during
+                // a horizontal drag*. We don't fade them on a vertical
+                // dismiss drag — neighbours stay flat behind the active
+                // page so the dismiss reads as one card lifting away.
                 .scaleEffect(scale(for: index, dragX: horizontalDrag, width: width))
                 .opacity(opacity(for: index, dragX: horizontalDrag, width: width))
-                .offset(y: index == state.currentUserIndex ? state.dragOffset : 0)
             }
         }
         .frame(width: width, alignment: .leading)
         .offset(x: baseOffset)
+        // Vertical dismiss drag transforms the whole pager as one card,
+        // not each page individually. This avoids neighbour pages
+        // bleeding into the active page during a swipe-down — the
+        // single-card affordance matches Instagram's dismiss feel.
+        .offset(y: state.dragOffset)
         .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15)
     }
 
@@ -127,10 +147,15 @@ struct StoryViewerView: View {
         return story.items.first ?? state.currentItem
     }
 
-    // MARK: - Horizontal drag gesture (user pagination)
+    // MARK: - Unified drag gesture
 
-    private func horizontalDragGesture(containerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10)
+    /// Single drag gesture that arbitrates between horizontal user-pagination
+    /// and vertical swipe-to-dismiss. Axis lock fires after the first 12pt
+    /// of translation and is stable for the rest of the gesture — diagonal
+    /// drags resolve cleanly to one axis instead of jittering between
+    /// horizontal pager offset and vertical dismiss offset.
+    private func unifiedDragGesture(containerSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if lockedAxis == nil {
                     let dx = abs(value.translation.width)
@@ -138,30 +163,77 @@ struct StoryViewerView: View {
                     guard max(dx, dy) >= Self.axisLockTranslation else { return }
                     lockedAxis = dx >= dy ? .horizontal : .vertical
                 }
-                guard lockedAxis == .horizontal else { return }
-                horizontalDrag = clampedHorizontal(value.translation.width, containerWidth: containerWidth)
+                switch lockedAxis {
+                case .horizontal:
+                    horizontalDrag = clampedHorizontal(value.translation.width, containerWidth: containerSize.width)
+                case .vertical:
+                    state.updateDrag(translationY: value.translation.height, containerHeight: containerSize.height)
+                case .none:
+                    return
+                }
             }
             .onEnded { value in
                 defer { lockedAxis = nil }
-                guard lockedAxis == .horizontal else { return }
-                let projectedDelta = value.predictedEndTranslation.width - value.translation.width
-                let velocityX = projectedDelta / 0.25
-                let commitsForward = value.translation.width < -containerWidth * Self.userSwipeCommitFraction
-                    || velocityX < -Self.userSwipeVelocityThreshold
-                let commitsBackward = value.translation.width > containerWidth * Self.userSwipeCommitFraction
-                    || velocityX > Self.userSwipeVelocityThreshold
-                let snapBack: Animation = reduceMotion
-                    ? .linear(duration: 0)
-                    : .spring(response: 0.45, dampingFraction: 0.85)
-                withAnimation(snapBack) {
-                    horizontalDrag = 0
-                }
-                if commitsForward {
-                    state.nextUser()
-                } else if commitsBackward {
-                    state.previousUser()
+                switch lockedAxis {
+                case .horizontal:
+                    endHorizontalDrag(value: value, containerWidth: containerSize.width)
+                case .vertical:
+                    endVerticalDrag(value: value, containerHeight: containerSize.height)
+                case .none:
+                    return
                 }
             }
+    }
+
+    private func endHorizontalDrag(value: DragGesture.Value, containerWidth: CGFloat) {
+        let projectedDelta = value.predictedEndTranslation.width - value.translation.width
+        let velocityX = projectedDelta / 0.25
+        let commitsForward = value.translation.width < -containerWidth * Self.userSwipeCommitFraction
+            || velocityX < -Self.userSwipeVelocityThreshold
+        let commitsBackward = value.translation.width > containerWidth * Self.userSwipeCommitFraction
+            || velocityX > Self.userSwipeVelocityThreshold
+        let snapBack: Animation = reduceMotion
+            ? .linear(duration: 0)
+            : .spring(response: 0.45, dampingFraction: 0.85)
+        withAnimation(snapBack) {
+            horizontalDrag = 0
+        }
+        if commitsForward {
+            state.nextUser()
+        } else if commitsBackward {
+            state.previousUser()
+        }
+    }
+
+    private func endVerticalDrag(value: DragGesture.Value, containerHeight: CGFloat) {
+        guard state.dragOffset != 0 || value.translation.height != 0 else { return }
+        let projectedDelta = value.predictedEndTranslation.height - value.translation.height
+        let velocityY = projectedDelta / 0.25
+        if state.shouldCommitDismiss(
+            translationY: value.translation.height,
+            velocityY: velocityY,
+            containerHeight: containerHeight,
+        ) {
+            state.endDrag(
+                translationY: value.translation.height,
+                velocityY: velocityY,
+                containerHeight: containerHeight,
+            )
+        } else {
+            // Snap-back animates the released drag values; we let the
+            // model reset its drag offsets and then animate the View
+            // through the resulting state change.
+            let snapBack: Animation = reduceMotion
+                ? .linear(duration: 0)
+                : .spring(response: 0.4, dampingFraction: 0.85)
+            withAnimation(snapBack) {
+                state.endDrag(
+                    translationY: value.translation.height,
+                    velocityY: velocityY,
+                    containerHeight: containerHeight,
+                )
+            }
+        }
     }
 
     /// Rubber-band the drag past the boundaries — we still let the user

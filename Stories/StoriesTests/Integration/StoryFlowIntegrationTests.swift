@@ -36,7 +36,7 @@ struct StoryFlowIntegrationTests {
         }
     }
 
-    @Test("Open user 3, mark 2 items seen via tap-forward, dismiss, list reflects seen state")
+    @Test("Open user 3, view 2 of 3 items, dismiss, list ring stays partial")
     func openViewTwoItemsDismissAssertSeen() async {
         let stories = Self.makeStories()
         let repo = FakeStoryRepository(mode: .pages([stories]))
@@ -52,37 +52,39 @@ struct StoryFlowIntegrationTests {
         #expect(list.pages.count == 5)
         #expect(list.fullySeenStoryIDs.isEmpty)
 
-        // 2. Open user at index 3.
+        // 2. Open user at index 3 — `onAppear` is what the View calls
+        //    in production; we invoke it directly because no View hosts
+        //    this viewer in an integration test. The new "seen-on-current"
+        //    rule fires from inside `onAppear`, so calling it is what
+        //    marks `u3-0` seen.
         let openedStory = list.pages[3]
-        guard let viewer = list.makeViewerState(startingAt: openedStory) else {
+        guard let viewer = await list.makeViewerState(startingAt: openedStory) else {
             Issue.record("makeViewerState should resolve the index for a known story")
             return
         }
         #expect(viewer.currentUserIndex == 3)
         #expect(viewer.currentItemIndex == 0)
+        await viewer.onAppear()
 
-        // 3. View 2 items via explicit tap-forward (the path that marks
-        //    seen synchronously, no clock dependency).
-        viewer.nextItem()   // item 0 -> 1, marks u3-0 seen
-        viewer.nextItem()   // item 1 -> 2, marks u3-1 seen
-        #expect(viewer.currentItemIndex == 2)
+        // 3. Advance to item 1 — marks u3-1 seen. Stop there so item 2
+        //    remains unseen for the partial-ring assertion below.
+        viewer.nextItem()
+        #expect(viewer.currentItemIndex == 1)
         // Allow the detached `Task { await stateStore.markSeen(...) }`
-        // dispatched by `nextItem()` to reach the actor.
-        await Task.yield()
-        await Task.yield()
+        // dispatched on item start to reach the actor.
+        for _ in 0..<8 { await Task.yield() }
 
-        // 4. Dismiss.
+        // 4. Dismiss without advancing further.
         viewer.dismiss()
         #expect(viewer.shouldDismiss == true)
         await viewer.flushPendingPersistence()
 
-        // 5. Assert the store recorded both seen items.
+        // 5. Assert the store recorded the two viewed items only.
         #expect(await store.isSeen("u3-0") == true)
         #expect(await store.isSeen("u3-1") == true)
         #expect(await store.isSeen("u3-2") == false)
 
-        // 6. The list re-reads the store on dismiss; verify the ring
-        //    state stays "not fully seen" (only 2 of 3 items viewed).
+        // 6. List re-reads the store on dismiss; the ring stays partial.
         await list.refreshFullySeen(for: openedStory)
         #expect(list.fullySeenStoryIDs.contains(openedStory.id) == false)
 

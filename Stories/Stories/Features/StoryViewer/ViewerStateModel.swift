@@ -6,15 +6,13 @@ import Observation
 /// transient gesture state (immersive, drag, heart pop). Drives a
 /// `PlaybackController` and reacts to its `onItemEnd` to advance.
 ///
-/// Two design points worth re-stating:
 /// - **Optimistic state flips first, persistence follows.** `isLiked` is
 ///   updated synchronously before the `await` on the store completes, so
 ///   the UI never feels laggy on a tap. The store is the source of truth
 ///   on cold-start, not during a session.
-/// - **Seen marking is event-driven, not timer-driven.** A 1.5s task is
-///   scheduled on item start; `nextItem()` (the explicit forward tap)
-///   also marks seen and cancels the task. Items the user blew past in
-///   <1.5s without an explicit tap forward stay unseen.
+/// - **Seen marking is immediate.** Each item is marked seen the moment
+///   it becomes the current item — opening a story marks its first item
+///   seen, advancing marks the next, etc.
 @Observable
 final class ViewerStateModel: Identifiable {
 
@@ -33,6 +31,12 @@ final class ViewerStateModel: Identifiable {
 
     private(set) var isLiked = false
 
+    /// Items marked seen during this viewer session. Populated synchronously
+    /// in `onItemDidStart`, before the persistence hop completes — so the
+    /// list-side `refreshFullySeen` can reflect the new state instantly on
+    /// dismiss without racing the debounced disk write.
+    private(set) var sessionSeenItemIDs: Set<String> = []
+
     // MARK: - Transient gesture state
 
     private(set) var isImmersive = false
@@ -48,10 +52,8 @@ final class ViewerStateModel: Identifiable {
     private let stateStore: any UserStateRepository
     private let clock: any Clock<Duration>
     private let prefetcher: ImagePrefetchHandle?
-    private let seenThreshold: Duration
     private let heartPopWindow: Duration
 
-    private var seenMarkTask: Task<Void, Never>?
     private var heartPopClearTask: Task<Void, Never>?
 
     // MARK: - Init
@@ -59,22 +61,23 @@ final class ViewerStateModel: Identifiable {
     init(
         users: [Story],
         startUserIndex: Int,
+        startItemIndex: Int = 0,
         stateStore: any UserStateRepository,
         clock: any Clock<Duration> = ContinuousClock(),
         playback: PlaybackController? = nil,
         prefetcher: ImagePrefetchHandle? = nil,
-        seenThreshold: Duration = .milliseconds(1500),
         heartPopWindow: Duration = .milliseconds(800),
     ) {
         precondition(!users.isEmpty, "ViewerStateModel requires at least one user")
         precondition(users.indices.contains(startUserIndex), "startUserIndex out of range")
+        let safeItemIndex = users[startUserIndex].items.indices.contains(startItemIndex) ? startItemIndex : 0
         self.users = users
         self.currentUserIndex = startUserIndex
+        self.currentItemIndex = safeItemIndex
         self.stateStore = stateStore
         self.clock = clock
         self.playback = playback ?? PlaybackController(clock: clock)
         self.prefetcher = prefetcher
-        self.seenThreshold = seenThreshold
         self.heartPopWindow = heartPopWindow
 
         self.playback.onItemEnd = { [weak self] in self?.nextItem() }
@@ -83,8 +86,8 @@ final class ViewerStateModel: Identifiable {
     // MARK: - Lifecycle
 
     /// Called by the View on appear. Resets playback for the start item,
-    /// loads its `isLiked` state from the store, schedules the seen task,
-    /// and prefetches the next image.
+    /// loads its `isLiked` state from the store, marks the current item
+    /// as seen, and prefetches the next image.
     func onAppear() async {
         await reloadLikedState()
         playback.start()
@@ -92,20 +95,12 @@ final class ViewerStateModel: Identifiable {
         prefetchNext()
     }
 
-    /// Schedules the 1.5s seen task for the current item. Called from
-    /// `onAppear` and from every navigation transition.
+    /// Marks the current item as seen the moment it becomes current.
+    /// Called from `onAppear` and from every navigation transition.
     func onItemDidStart() {
-        seenMarkTask?.cancel()
         let item = currentItem
-        seenMarkTask = Task { [clock, stateStore, seenThreshold] in
-            do {
-                try await clock.sleep(for: seenThreshold)
-            } catch {
-                return
-            }
-            if Task.isCancelled { return }
-            await stateStore.markSeen(itemID: item.id)
-        }
+        sessionSeenItemIDs.insert(item.id)
+        Task { [stateStore] in await stateStore.markSeen(itemID: item.id) }
     }
 
     // MARK: - Convenience accessors
@@ -115,14 +110,9 @@ final class ViewerStateModel: Identifiable {
 
     // MARK: - Navigation
 
-    /// Tap-forward path. Marks the *current* item seen immediately
-    /// (covering the power-skimmer who flicks past a user's items in
-    /// under 1.5s) and cancels the pending seen task. Then advances.
+    /// Tap-forward path. The next item becomes current; `onItemDidStart`
+    /// marks it seen immediately.
     func nextItem() {
-        seenMarkTask?.cancel()
-        let item = currentItem
-        Task { [stateStore] in await stateStore.markSeen(itemID: item.id) }
-
         if currentItemIndex + 1 < currentUser.items.count {
             currentItemIndex += 1
             restartForNewItem()
@@ -135,10 +125,8 @@ final class ViewerStateModel: Identifiable {
         }
     }
 
-    /// Tap-back path. Does not mark the current item seen — going
-    /// backwards is rewinding, not skimming.
+    /// Tap-back path.
     func previousItem() {
-        seenMarkTask?.cancel()
         if currentItemIndex > 0 {
             currentItemIndex -= 1
             restartForNewItem()
@@ -155,7 +143,6 @@ final class ViewerStateModel: Identifiable {
 
     /// Horizontal swipe to the next user.
     func nextUser() {
-        seenMarkTask?.cancel()
         guard currentUserIndex + 1 < users.count else {
             dismiss()
             return
@@ -168,7 +155,6 @@ final class ViewerStateModel: Identifiable {
     /// Horizontal swipe to the previous user. Falls back to a no-op
     /// rewind on the first user (matches Instagram's edge behaviour).
     func previousUser() {
-        seenMarkTask?.cancel()
         if currentUserIndex > 0 {
             currentUserIndex -= 1
             currentItemIndex = 0
@@ -181,7 +167,6 @@ final class ViewerStateModel: Identifiable {
     }
 
     func dismiss() {
-        seenMarkTask?.cancel()
         heartPopClearTask?.cancel()
         playback.stop()
         shouldDismiss = true

@@ -134,54 +134,37 @@ struct ViewerStateModelTests {
         #expect(model.currentItemIndex == 0)
     }
 
-    // MARK: - Seen rule (1.5s)
+    // MARK: - Seen marking (immediate on item start)
 
-    @Test("seen task does NOT mark seen when dwell is under 1.5s and user dismisses")
-    func seenSubThresholdNoMark() async {
+    @Test("opening a story marks the first item seen immediately")
+    func seenOnAppear() async {
         let users = Self.makeUsers([2])
-        let (model, store, clock) = Self.makeModel(users: users)
+        let (model, store, _) = Self.makeModel(users: users)
         await model.onAppear()
-        // Simulate the user staring for under 1.5s, then dismiss.
-        await clock.advance(by: .milliseconds(1400))
-        model.dismiss()
-        // Even if the seenMark task fires later, it has been cancelled.
-        await clock.advance(by: .milliseconds(500))
-        let seenCount = await store.markSeenCallCount
-        #expect(seenCount == 0)
-    }
-
-    @Test("seen task marks seen at exactly 1.5s")
-    func seenAtThresholdMarks() async {
-        let users = Self.makeUsers([2])
-        let (model, store, clock) = Self.makeModel(users: users)
-        await model.onAppear()
-        await clock.advance(by: .milliseconds(1500))
-        let seen = await store.isSeen("u0-0")
-        #expect(seen)
-    }
-
-    @Test("seen task marks seen at 3s (well past threshold)")
-    func seenWellPastThreshold() async {
-        let users = Self.makeUsers([2])
-        let (model, store, clock) = Self.makeModel(users: users)
-        await model.onAppear()
-        await clock.advance(by: .seconds(3))
-        let seen = await store.isSeen("u0-0")
-        #expect(seen)
-    }
-
-    @Test("explicit nextItem before 1.5s still marks the previous item seen")
-    func tapForwardMarksSeen() async {
-        let users = Self.makeUsers([2])
-        let (model, store, clock) = Self.makeModel(users: users)
-        await model.onAppear()
-        await clock.advance(by: .milliseconds(500))
-        model.nextItem()
-        // Allow the detached `Task { await store.markSeen(...) }` to drain.
-        await clock.advance(by: .milliseconds(50))
         for _ in 0..<8 { await Task.yield() }
         let seen = await store.isSeen("u0-0")
         #expect(seen)
+    }
+
+    @Test("opening a story exposes the seen item via sessionSeenItemIDs synchronously")
+    func sessionSeenSynchronous() async {
+        let users = Self.makeUsers([2])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        // Synchronous: no actor hop required to see the in-session set.
+        #expect(model.sessionSeenItemIDs.contains("u0-0"))
+    }
+
+    @Test("nextItem marks the new item seen, not just the previous one")
+    func nextItemMarksNewItem() async {
+        let users = Self.makeUsers([3])
+        let (model, store, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.nextItem()
+        for _ in 0..<8 { await Task.yield() }
+        #expect(await store.isSeen("u0-0"))
+        #expect(await store.isSeen("u0-1"))
+        #expect(model.sessionSeenItemIDs.contains("u0-1"))
     }
 
     // MARK: - Like

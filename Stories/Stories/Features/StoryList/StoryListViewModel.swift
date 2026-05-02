@@ -158,16 +158,54 @@ final class StoryListViewModel {
         await refreshFullySeen(for: [story])
     }
 
+    /// Synchronously merges an in-memory set of seen item IDs into the
+    /// fully-seen ring decision. Used by the viewer dismiss path so the
+    /// ring flips from unseen to seen the instant the cover dismisses,
+    /// without waiting on the persistence flush race.
+    func applySessionSeen(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        var newlyFullySeen: Set<String> = []
+        for story in pages where !fullySeenStoryIDs.contains(story.id) {
+            let allSeen = !story.items.isEmpty
+                && story.items.allSatisfy { ids.contains($0.id) || fullySeenStoryIDs.contains(story.id) }
+            // The `fullySeenStoryIDs.contains` short-circuit above is a
+            // safeguard if a partial in-session seen-set is merged twice.
+            if allSeen {
+                newlyFullySeen.insert(story.id)
+            }
+        }
+        if !newlyFullySeen.isEmpty {
+            fullySeenStoryIDs.formUnion(newlyFullySeen)
+        }
+    }
+
     /// Builds a viewer state model anchored at the given story. The
     /// viewer paginates over *all* loaded users so a horizontal swipe
     /// crosses page boundaries seamlessly.
-    func makeViewerState(startingAt story: Story) -> ViewerStateModel? {
+    ///
+    /// Resume rule: if some items are unseen, start at the first unseen
+    /// item; if every item is already seen, start at the first item
+    /// (Instagram parity — re-watching from the start, not the last seen).
+    func makeViewerState(startingAt story: Story) async -> ViewerStateModel? {
         guard let index = pages.firstIndex(where: { $0.id == story.id }) else { return nil }
+        let resumeIndex = await firstUnseenIndex(in: story) ?? 0
         return ViewerStateModel(
             users: pages,
             startUserIndex: index,
+            startItemIndex: resumeIndex,
             stateStore: userStateRepository,
         )
+    }
+
+    /// Returns the index of the first unseen item in `story`, or `nil`
+    /// when every item is already seen.
+    private func firstUnseenIndex(in story: Story) async -> Int? {
+        for (index, item) in story.items.enumerated() {
+            if await userStateRepository.isSeen(item.id) == false {
+                return index
+            }
+        }
+        return nil
     }
 
     // MARK: - Prefetch

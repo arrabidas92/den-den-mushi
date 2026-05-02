@@ -2,20 +2,10 @@ import SwiftUI
 import NukeUI
 
 /// One full-bleed page of the viewer — image (or failure frame), tap
-/// zones, long-press immersive, double-tap heart pop, swipe-down dismiss.
-/// Knows about the *current* item only; horizontal user navigation lives
-/// one level up in `StoryViewerView`.
-///
-/// Why everything here and not split into more components:
-/// - `LazyImage` is the only place we observe load failure, so the
-///   pause-on-failure path must live here.
-/// - The swipe-down `DragGesture` and the long-press must arbitrate
-///   against each other on the same hit-test region; splitting them
-///   into sibling Views would force an axis-locking gesture proxy
-///   that adds more code than the file saves.
-/// - The heart-pop overlay must read its location in the same coordinate
-///   space the right tap zone reports, so they share a single
-///   `GeometryReader`.
+/// zones, long-press immersive, double-tap heart pop. Knows about the
+/// *current* item only; horizontal user navigation and swipe-down dismiss
+/// live one level up in `StoryViewerView` so a single arbitrated drag
+/// gesture handles both axes.
 struct StoryViewerPage: View {
 
     @Bindable var state: ViewerStateModel
@@ -37,32 +27,27 @@ struct StoryViewerPage: View {
     private static let heartPopSize: CGFloat = 96
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                imageLayer
-                    .scaleEffect(imageScale)
-                    .opacity(imageOpacity)
+        ZStack {
+            imageLayer
 
-                if isActive {
-                    ViewerTapZones(
-                        onPrevious: state.previousItem,
-                        onNext: state.nextItem,
-                        onDoubleTap: handleDoubleTap,
-                    )
-                    .allowsHitTesting(!loadFailed && !state.isImmersive)
+            if isActive {
+                ViewerTapZones(
+                    onPrevious: state.previousItem,
+                    onNext: state.nextItem,
+                    onDoubleTap: handleDoubleTap,
+                )
+                .allowsHitTesting(!loadFailed && !state.isImmersive)
 
-                    heartPopOverlay
-                }
+                heartPopOverlay
             }
-            .contentShape(Rectangle())
-            .onLongPressGesture(
-                minimumDuration: Self.longPressMinimumDuration,
-                maximumDistance: Self.longPressMaxMovement,
-                perform: {},
-                onPressingChanged: handleLongPressChange,
-            )
-            .simultaneousGesture(dragGesture(containerHeight: geo.size.height))
         }
+        .contentShape(Rectangle())
+        .onLongPressGesture(
+            minimumDuration: Self.longPressMinimumDuration,
+            maximumDistance: Self.longPressMaxMovement,
+            perform: {},
+            onPressingChanged: handleLongPressChange,
+        )
     }
 
     // MARK: - Image layer
@@ -116,22 +101,6 @@ struct StoryViewerPage: View {
         }
     }
 
-    // MARK: - Image transforms
-
-    private var imageScale: CGFloat {
-        // 1.0 → 0.85 with drag progress (design.md). Reduced motion still
-        // tracks the drag — only the post-commit animation is collapsed.
-        1.0 - CGFloat(state.dragProgress) * 0.15
-    }
-
-    private var imageOpacity: Double {
-        // The page's own opacity stays at 1.0; the *background* fade lives
-        // on `StoryViewerView` and is what the user perceives. Image
-        // opacity is held at 1.0 so the frame keeps its weight while the
-        // user is dragging.
-        1.0
-    }
-
     // MARK: - Gestures
 
     /// `onPressingChanged` fires `true` once the press has held for
@@ -139,7 +108,7 @@ struct StoryViewerPage: View {
     /// `maximumDistance`, and fires `false` on lift-off *or* on
     /// cancellation (the finger crossed the 8pt threshold). Both branches
     /// route through `endImmersive`, so a press-cancelled-by-drag exits
-    /// immersive cleanly and the swipe-down `DragGesture` takes over.
+    /// immersive cleanly and the parent's drag gesture takes over.
     private func handleLongPressChange(_ pressing: Bool) {
         guard isActive, !loadFailed else { return }
         if pressing {
@@ -147,34 +116,6 @@ struct StoryViewerPage: View {
         } else if state.isImmersive {
             state.endImmersive()
         }
-    }
-
-    private func dragGesture(containerHeight: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                // Vertical-only — let the parent (StoryViewerView) own
-                // horizontal user-pagination drag. We refuse to engage
-                // until the gesture is unambiguously vertical.
-                guard isActive, !loadFailed else { return }
-                guard abs(value.translation.height) > abs(value.translation.width) else { return }
-                state.updateDrag(translationY: value.translation.height, containerHeight: containerHeight)
-            }
-            .onEnded { value in
-                guard isActive, !loadFailed else { return }
-                guard state.dragOffset != 0 else { return }
-                // SwiftUI's DragGesture doesn't expose velocity directly;
-                // `predictedEndTranslation` is the deceleration target ~0.25s
-                // out, so dividing the delta by that window approximates
-                // the on-release pt/s velocity well enough for the
-                // 800pt/s threshold check.
-                let projectedDelta = value.predictedEndTranslation.height - value.translation.height
-                let velocityY = projectedDelta / 0.25
-                state.endDrag(
-                    translationY: value.translation.height,
-                    velocityY: velocityY,
-                    containerHeight: containerHeight,
-                )
-            }
     }
 
     // MARK: - Double-tap heart pop

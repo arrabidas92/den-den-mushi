@@ -25,14 +25,21 @@ struct StoryListView: View {
     private static let skeletonCount = 8
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: density.itemSpacing) {
-                content
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: density.itemSpacing) {
+                    content
+                }
+                .padding(.horizontal, Spacing.l)
+                .padding(.vertical, Spacing.m)
             }
-            .padding(.horizontal, Spacing.l)
-            .padding(.vertical, Spacing.m)
+            .scrollClipDisabled()
+            .frame(height: StoryTrayItem.avatarSize + 2 * Spacing.m + Spacing.s + 16)
+            Divider()
+                .background(Color.surfaceElevated.opacity(0.4))
+            Spacer(minLength: 0)
         }
-        .scrollClipDisabled()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.background)
         .onScrollGeometryChange(for: Bool.self) { geo in
             viewModel.shouldLoadMore(
@@ -53,8 +60,13 @@ struct StoryListView: View {
                 transitionNamespace: transitionNamespace,
                 onDismiss: {
                     let story = presentedStory
+                    let seenIDs = state.sessionSeenItemIDs
                     presentedViewerState = nil
                     presentedStory = nil
+                    // Optimistic ring flip — uses in-memory seen set so
+                    // the avatar's ring updates the same frame the cover
+                    // dismisses, without waiting on the persistence flush.
+                    viewModel.applySessionSeen(seenIDs)
                     if let story {
                         Task { await viewModel.refreshFullySeen(for: story) }
                     }
@@ -68,9 +80,11 @@ struct StoryListView: View {
             onSelect(story)
             return
         }
-        guard let state = viewModel.makeViewerState(startingAt: story) else { return }
-        presentedStory = story
-        presentedViewerState = state
+        Task {
+            guard let state = await viewModel.makeViewerState(startingAt: story) else { return }
+            presentedStory = story
+            presentedViewerState = state
+        }
     }
 
     @ViewBuilder

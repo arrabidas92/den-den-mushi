@@ -33,7 +33,7 @@ final class PlaybackController {
 
     init(
         clock: any Clock<Duration> = ContinuousClock(),
-        itemDuration: Duration = .seconds(5),
+        itemDuration: Duration = .seconds(7),
         tickInterval: Duration = .milliseconds(50),
     ) {
         self.clock = clock

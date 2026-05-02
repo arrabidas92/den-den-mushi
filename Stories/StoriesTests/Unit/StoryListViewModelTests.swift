@@ -217,4 +217,65 @@ struct StoryListViewModelTests {
         await vm.refreshFullySeen(for: stories[1])
         #expect(vm.fullySeenStoryIDs == ["u0", "u1"])
     }
+
+    // MARK: - applySessionSeen (optimistic ring flip on dismiss)
+
+    @Test("applySessionSeen flips a story to fully-seen synchronously")
+    func applySessionSeenFlipsRing() async {
+        let stories = Self.makeStories(2)
+        let (vm, _, _) = Self.makeVM(pages: [stories])
+        await vm.loadInitial()
+        #expect(vm.fullySeenStoryIDs.isEmpty)
+
+        let allItemIDs = Set(stories[0].items.map(\.id))
+        vm.applySessionSeen(allItemIDs)
+        #expect(vm.fullySeenStoryIDs.contains("u0"))
+        #expect(vm.fullySeenStoryIDs.contains("u1") == false)
+    }
+
+    @Test("applySessionSeen leaves the ring partial when not every item is in the set")
+    func applySessionSeenPartial() async {
+        let stories = Self.makeStories(2)
+        let (vm, _, _) = Self.makeVM(pages: [stories])
+        await vm.loadInitial()
+        // Only the first item of u0 — not enough to flip the ring.
+        vm.applySessionSeen([stories[0].items[0].id])
+        #expect(vm.fullySeenStoryIDs.contains("u0") == false)
+    }
+
+    // MARK: - Resume (start at first unseen item)
+
+    @Test("makeViewerState starts at item 0 for a fresh story")
+    func resumeFreshStory() async {
+        let stories = Self.makeStories(1)
+        let (vm, _, _) = Self.makeVM(pages: [stories])
+        await vm.loadInitial()
+        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        #expect(viewer?.currentItemIndex == 0)
+    }
+
+    @Test("makeViewerState resumes at the first unseen item")
+    func resumeAtFirstUnseen() async {
+        let stories = Self.makeStories(1)
+        let store = InMemoryUserStateStore()
+        // Mark only the first item of u0 seen — second is unseen.
+        await store.markSeen(itemID: stories[0].items[0].id)
+
+        let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
+        await vm.loadInitial()
+        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        #expect(viewer?.currentItemIndex == 1)
+    }
+
+    @Test("makeViewerState starts at item 0 when every item is already seen")
+    func resumeAtZeroWhenAllSeen() async {
+        let stories = Self.makeStories(1)
+        let store = InMemoryUserStateStore()
+        for item in stories[0].items { await store.markSeen(itemID: item.id) }
+
+        let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
+        await vm.loadInitial()
+        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        #expect(viewer?.currentItemIndex == 0)
+    }
 }
