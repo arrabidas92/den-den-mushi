@@ -1,0 +1,155 @@
+{
+  "users": [
+    {
+      "id": "alice",
+      "stableID": "alice",
+      "username": "alice.morgan",
+      "avatarURL": "https://picsum.photos/seed/alice-avatar/200/200",
+      "items": [
+        {
+          "id": "alice-1",
+          "imageURL": "https://picsum.photos/seed/alice-1/1080/1920",
+          "createdAtISO": "2026-05-02T05:30:00Z"
+        },
+        {
+          "id": "alice-2",
+          "imageURL": "https://picsum.photos/seed/alice-2/1080/1920",
+          "createdAtISO": "2026-05-02T05:45:00Z"
+        },
+        {
+          "id": "alice-3",
+          "imageURL": "https://picsum.photos/seed/alice-3/1080/1920",
+          "createdAtISO": "2026-05-02T06:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "ben",
+      "stableID": "ben",
+      "username": "ben.kapoor",
+      "avatarURL": "https://picsum.photos/seed/ben-avatar/200/200",
+      "items": [
+        {
+          "id": "ben-1",
+          "imageURL": "https://picsum.photos/seed/ben-1/1080/1920",
+          "createdAtISO": "2026-05-02T03:10:00Z"
+        },
+        {
+          "id": "ben-2",
+          "imageURL": "https://picsum.photos/seed/ben-2/1080/1920",
+          "createdAtISO": "2026-05-02T03:25:00Z"
+        }
+      ]
+    },
+    {
+      "id": "camille",
+      "stableID": "camille",
+      "username": "camille.r",
+      "avatarURL": "https://picsum.photos/seed/camille-avatar/200/200",
+      "items": [
+        {
+          "id": "camille-1",
+          "imageURL": "https://picsum.photos/seed/camille-1/1080/1920",
+          "createdAtISO": "2026-05-01T22:00:00Z"
+        },
+        {
+          "id": "camille-2",
+          "imageURL": "https://picsum.photos/seed/camille-2/1080/1920",
+          "createdAtISO": "2026-05-01T22:30:00Z"
+        },
+        {
+          "id": "camille-3",
+          "imageURL": "https://picsum.photos/seed/camille-3/1080/1920",
+          "createdAtISO": "2026-05-01T23:00:00Z"
+        },
+        {
+          "id": "camille-4",
+          "imageURL": "https://picsum.photos/seed/camille-4/1080/1920",
+          "createdAtISO": "2026-05-01T23:30:00Z"
+        }
+      ]
+    },
+    {
+      "id": "dimitri",
+      "stableID": "dimitri",
+      "username": "dimitri.v",
+      "avatarURL": "https://picsum.photos/seed/dimitri-avatar/200/200",
+      "items": [
+        {
+          "id": "dimitri-1",
+          "imageURL": "https://picsum.photos/seed/dimitri-1/1080/1920",
+          "createdAtISO": "2026-05-01T18:15:00Z"
+        },
+        {
+          "id": "dimitri-2",
+          "imageURL": "https://picsum.photos/seed/dimitri-2/1080/1920",
+          "createdAtISO": "2026-05-01T18:45:00Z"
+        }
+      ]
+    },
+    {
+      "id": "elena",
+      "stableID": "elena",
+      "username": "elena.song",
+      "avatarURL": "https://picsum.photos/seed/elena-avatar/200/200",
+      "items": [
+        {
+          "id": "elena-1",
+          "imageURL": "https://picsum.photos/seed/elena-1/1080/1920",
+          "createdAtISO": "2026-05-01T14:00:00Z"
+        },
+        {
+          "id": "elena-2",
+          "imageURL": "https://picsum.photos/seed/elena-2/1080/1920",
+          "createdAtISO": "2026-05-01T14:20:00Z"
+        },
+        {
+          "id": "elena-3",
+          "imageURL": "https://picsum.photos/seed/elena-3/1080/1920",
+          "createdAtISO": "2026-05-01T14:40:00Z"
+        }
+      ]
+    },
+    {
+      "id": "farouk",
+      "stableID": "farouk",
+      "username": "farouk.bz",
+      "avatarURL": "https://picsum.photos/seed/farouk-avatar/200/200",
+      "items": [
+        {
+          "id": "farouk-1",
+          "imageURL": "https://picsum.photos/seed/farouk-1/1080/1920",
+          "createdAtISO": "2026-05-01T09:30:00Z"
+        },
+        {
+          "id": "farouk-2",
+          "imageURL": "https://picsum.photos/seed/farouk-2/1080/1920",
+          "createdAtISO": "2026-05-01T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "gwen",
+      "stableID": "gwen",
+      "username": "gwen.aa",
+      "avatarURL": "https://picsum.photos/seed/gwen-avatar/200/200",
+      "items": [
+        {
+          "id": "gwen-1",
+          "imageURL": "https://picsum.photos/seed/gwen-1/1080/1920",
+          "createdAtISO": "2026-04-30T20:00:00Z"
+        },
+        {
+          "id": "gwen-2",
+          "imageURL": "https://picsum.photos/seed/gwen-2/1080/1920",
+          "createdAtISO": "2026-04-30T20:15:00Z"
+        },
+        {
+          "id": "gwen-3",
+          "imageURL": "https://picsum.photos/seed/gwen-3/1080/1920",
+          "createdAtISO": "2026-04-30T20:30:00Z"
+        }
+      ]
+    }
+  ]
+}
