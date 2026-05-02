@@ -150,7 +150,10 @@ struct StoryViewerView: View {
                     || velocityX < -Self.userSwipeVelocityThreshold
                 let commitsBackward = value.translation.width > containerWidth * Self.userSwipeCommitFraction
                     || velocityX > Self.userSwipeVelocityThreshold
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                let snapBack: Animation = reduceMotion
+                    ? .linear(duration: 0)
+                    : .spring(response: 0.45, dampingFraction: 0.85)
+                withAnimation(snapBack) {
                     horizontalDrag = 0
                 }
                 if commitsForward {

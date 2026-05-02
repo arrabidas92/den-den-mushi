@@ -10,6 +10,8 @@ struct SegmentedProgressBar: View {
     /// 0...1, only applied to the segment at `currentIndex`.
     let progress: Double
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// 3pt height per the design spec; matches the perceptual minimum
     /// for "this is a thin progress bar" without crossing into hairline.
     static let segmentHeight: CGFloat = 3
@@ -26,6 +28,9 @@ struct SegmentedProgressBar: View {
             }
         }
         .frame(height: Self.segmentHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Story progress")
+        .accessibilityValue("Item \(currentIndex + 1) of \(count)")
     }
 
     @ViewBuilder
@@ -43,7 +48,13 @@ struct SegmentedProgressBar: View {
 
     private func filled(at index: Int) -> Double {
         if index < currentIndex { return 1 }
-        if index == currentIndex { return min(max(progress, 0), 1) }
+        if index == currentIndex {
+            // Reduced motion: a discrete tick (empty until the item ends,
+            // then full at index advance) is preferable to a continuous
+            // 5s linear sweep — see design.md § Motion principles.
+            if reduceMotion { return 0 }
+            return min(max(progress, 0), 1)
+        }
         return 0
     }
 }

@@ -12,16 +12,30 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 
 ## Lancer le projet
 
+Versions épinglées:
+- **Xcode 26.4.1** (build 17E202)
+- **Simulateur iPhone 17 Pro** (iOS 26)
+- **iOS 18.0** minimum à l'exécution
+
 ```bash
-open Stories.xcodeproj
+open Stories/Stories.xcodeproj
 ```
 
-Puis lancer la cible `Stories` sur un simulateur iPhone 15 Pro ou plus récent.
+Puis lancer la cible `Stories` sur un simulateur iPhone 17 Pro (ou tout iPhone iOS 18+).
 
 Pour lancer les tests:
 
 ```bash
-xcodebuild test -scheme Stories -destination 'platform=iOS Simulator,name=iPhone 15 Pro'
+xcodebuild test \
+  -scheme Stories \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -enableCodeCoverage YES
+```
+
+Pour relire la couverture par fichier:
+
+```bash
+xcrun xccov view --report /chemin/vers/Stories.xcresult
 ```
 
 ## Documentation
@@ -82,6 +96,18 @@ Un scénario end-to-end (in-memory, sans UI): charger la liste → ouvrir user 3
 ### Doubles de test
 
 Fakes écrits à la main (`FakeStoryRepository`, `InMemoryUserStateStore`). Pas de framework de mocking.
+
+### Couverture mesurée
+
+Mesurée via `xcrun xccov view --report` sur le `.xcresult` de la dernière exécution `cmd-U`. Les chiffres ci-dessous sont consolidés à la main par dossier — Xcode rapporte par fichier; agréger par cible n'a pas de sens ici puisqu'app et tests ne partagent pas le même périmètre logique.
+
+| Périmètre | Couverture | Détails |
+|---|---|---|
+| **ViewModels** (StoryListViewModel, ViewerStateModel, PlaybackController) | **94.8%** (384/405) | StoryListViewModel 98%, ViewerStateModel 92%, PlaybackController 100% |
+| **Domain** (Story, StoryItem, UserState, HeartPop) | **75.8%** (50/66) | Le manque tient à `encode(to:)` jamais exécuté en runtime (lecture-seulement depuis le bundle) et au path d'erreur ISO8601 — branches Codable défensives, non-tests par design |
+| **Data** (LocalStoryRepository, PersistedUserStateStore) | **91.9%** (137/149) | EphemeralUserStateStore (fallback runtime quand le store persistant échoue à init) reste 0% — c'est un chemin de récupération, l'exercer en test reviendrait à re-tester `InMemoryUserStateStore` |
+
+L'objectif `~80%` du `CLAUDE.md` est atteint et dépassé sur les deux périmètres prioritaires (ViewModels, Data critique). Les zones non couvertes sont documentées comme intentionnelles dans la section *Contrat visuel* (Views) et ci-dessus (branches Codable défensives).
 
 ## Trade-offs assumés
 
@@ -210,7 +236,7 @@ Wins peu coûteux implémentés:
 - `.accessibilityValue("liked" / "not liked")` sur le bouton like
 - Tap targets ≥ 44pt (Apple HIG)
 - Labels VoiceOver sur le bouton de fermeture
-- **Reduced motion** respecté globalement: `Motion.fast/standard/slow` collapsent à `0`, le ring et le like flippent instantanément, l'auto-advance reste actif via un tick discret (sans barre animée). Voir `design.md` → *Motion principles → Reduced motion*.
+- **Reduced motion** respecté globalement: `Motion.fast/standard/slow` collapsent à `0`, le ring et le like flippent instantanément, le snap-back du swipe horizontal (entre users) est instantané, et la barre de progression `SegmentedProgressBar` skippe le sweep linéaire de 5s pour un *tick discret* (le segment courant reste vide jusqu'à l'avance d'item — l'auto-advance lui-même est inchangé côté `PlaybackController`). Voir `design.md` → *Motion principles → Reduced motion*.
 
 Skippé (hors scope du test): support *Dynamic Type* (l'UI Stories est volontairement à taille fixe, comme Instagram), navigation VoiceOver entre items.
 
