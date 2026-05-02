@@ -23,4 +23,14 @@ enum ImageLoader {
         }
         ImagePipeline.shared = pipeline
     }
+
+    /// Drops both the memory and disk cache entries for `url`. Called by
+    /// the failure-frame Retry path: without it, Nuke's cached failure
+    /// short-circuits the next request and the user sees the same broken
+    /// frame regardless of network state.
+    static func invalidate(_ url: URL) {
+        let request = ImageRequest(url: url)
+        ImagePipeline.shared.cache.removeCachedImage(for: request)
+        ImagePipeline.shared.cache.removeCachedData(for: request)
+    }
 }

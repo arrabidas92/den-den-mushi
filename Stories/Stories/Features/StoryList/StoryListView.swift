@@ -14,10 +14,13 @@ struct StoryListView: View {
     @Environment(\.trayDensity) private var density
     @Namespace private var transitionNamespace
 
-    /// Fired when the user taps a fully-loaded tray item. The viewer
-    /// presentation lives outside this View (Phase 6 wires it via
-    /// `.fullScreenCover` from the parent).
-    var onSelect: (Story) -> Void = { _ in }
+    /// Optional override for tap handling (used by previews to avoid
+    /// presenting a real viewer). Nil in production — the View presents
+    /// `StoryViewerView` via `.fullScreenCover` itself.
+    var onSelect: ((Story) -> Void)? = nil
+
+    @State private var presentedViewerState: ViewerStateModel?
+    @State private var presentedStory: Story?
 
     private static let skeletonCount = 8
 
@@ -44,6 +47,30 @@ struct StoryListView: View {
         .task {
             await viewModel.loadInitial()
         }
+        .fullScreenCover(item: $presentedViewerState) { state in
+            StoryViewerView(
+                state: state,
+                transitionNamespace: transitionNamespace,
+                onDismiss: {
+                    let story = presentedStory
+                    presentedViewerState = nil
+                    presentedStory = nil
+                    if let story {
+                        Task { await viewModel.refreshFullySeen(for: story) }
+                    }
+                },
+            )
+        }
+    }
+
+    private func handleTap(_ story: Story) {
+        if let onSelect {
+            onSelect(story)
+            return
+        }
+        guard let state = viewModel.makeViewerState(startingAt: story) else { return }
+        presentedStory = story
+        presentedViewerState = state
     }
 
     @ViewBuilder
@@ -65,7 +92,7 @@ struct StoryListView: View {
                         isFullySeen: viewModel.fullySeenStoryIDs.contains(story.id),
                     ),
                     density: density,
-                    onTap: { onSelect(story) },
+                    onTap: { handleTap(story) },
                 )
                 .matchedTransitionSource(id: story.user.stableID, in: transitionNamespace)
             }

@@ -42,7 +42,7 @@ final class StoryListViewModel {
     private let pageSize: Int
     private let triggerOffset: Int
     private let storyRepository: StoryRepository
-    private let userStateRepository: UserStateRepository
+    let userStateRepository: UserStateRepository
     private let prefetcher: ImagePrefetchHandle?
 
     /// Tracks the next page index to fetch. Incremented only on success so
@@ -156,6 +156,18 @@ final class StoryListViewModel {
     /// passing the whole array.
     func refreshFullySeen(for story: Story) async {
         await refreshFullySeen(for: [story])
+    }
+
+    /// Builds a viewer state model anchored at the given story. The
+    /// viewer paginates over *all* loaded users so a horizontal swipe
+    /// crosses page boundaries seamlessly.
+    func makeViewerState(startingAt story: Story) -> ViewerStateModel? {
+        guard let index = pages.firstIndex(where: { $0.id == story.id }) else { return nil }
+        return ViewerStateModel(
+            users: pages,
+            startUserIndex: index,
+            stateStore: userStateRepository,
+        )
     }
 
     // MARK: - Prefetch

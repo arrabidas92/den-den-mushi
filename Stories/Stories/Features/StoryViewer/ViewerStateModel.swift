@@ -16,7 +16,12 @@ import Observation
 ///   also marks seen and cancels the task. Items the user blew past in
 ///   <1.5s without an explicit tap forward stay unseen.
 @Observable
-final class ViewerStateModel {
+final class ViewerStateModel: Identifiable {
+
+    /// Per-instance identity, used by SwiftUI's `.fullScreenCover(item:)`.
+    /// A fresh `ViewerStateModel` for the same user is treated as a new
+    /// presentation, which is the desired behaviour.
+    let id = UUID()
 
     // MARK: - Navigation
 
@@ -180,6 +185,15 @@ final class ViewerStateModel {
         heartPopClearTask?.cancel()
         playback.stop()
         shouldDismiss = true
+    }
+
+    /// Forces the underlying state store to flush its debounce window
+    /// to disk. Called from the View's `.onDisappear` so the session's
+    /// seen/like writes reach disk before the viewer is torn down — a
+    /// 500 ms debounce window otherwise lets a fast dismiss outrun the
+    /// next scheduled flush.
+    func flushPendingPersistence() async {
+        await stateStore.flushNow()
     }
 
     private func restartForNewItem() {
