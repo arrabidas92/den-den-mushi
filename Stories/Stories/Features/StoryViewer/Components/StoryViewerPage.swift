@@ -120,10 +120,10 @@ struct StoryViewerPage: View {
 
     // MARK: - Double-tap heart pop
 
-    private func handleDoubleTap(at location: CGPoint) {
+    private func handleDoubleTap() {
         guard isActive, !loadFailed else { return }
         Haptics.like()
-        state.doubleTapLike(at: location)
+        state.doubleTapLike(at: .zero)
     }
 
     @ViewBuilder
@@ -137,7 +137,6 @@ struct StoryViewerPage: View {
                 .foregroundStyle(Color.accentLike)
                 .scaleEffect(heartPopAnimationProgress.scale)
                 .opacity(heartPopAnimationProgress.opacity)
-                .position(pop.location)
                 .allowsHitTesting(false)
                 // Re-key on `pop.id` so back-to-back pops animate distinctly.
                 .id(pop.id)

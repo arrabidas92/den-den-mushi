@@ -33,15 +33,19 @@ struct StoryViewerView: View {
     /// `currentUserIndex` on the model has advanced.
     @State private var horizontalDrag: CGFloat = 0
     /// Lock the dominant axis at first engagement so a near-diagonal drag
-    /// is unambiguous. `nil` until the first 12pt of translation, then
-    /// pinned for the rest of the gesture.
+    /// is unambiguous. `nil` until the gesture engages (past
+    /// `dragMinimumDistance`), then pinned for the rest of the gesture.
     @State private var lockedAxis: DragAxis?
 
     /// Translation past which the user-pagination swipe commits to the
     /// next/previous user (a quarter of the container width).
     private static let userSwipeCommitFraction: CGFloat = 0.25
     private static let userSwipeVelocityThreshold: CGFloat = 500
-    private static let axisLockTranslation: CGFloat = 12
+    /// Minimum drag distance before the unified gesture engages. Set above
+    /// zero so a pure tap (translation == 0) never enters the drag path —
+    /// otherwise SwiftUI's gesture arbitration steals the tap away from the
+    /// child `ViewerTapZones`.
+    private static let dragMinimumDistance: CGFloat = 10
 
     private enum DragAxis { case horizontal, vertical }
 
@@ -53,17 +57,13 @@ struct StoryViewerView: View {
                 chrome
                     .opacity(state.isImmersive ? 0 : 1)
                     .animation(Motion.fastAnimation(reduceMotion: reduceMotion), value: state.isImmersive)
-                    // Item / user changes mutate the chrome's inputs (avatar,
-                    // username, segment count). Without this transaction the
-                    // SwiftUI animation context propagated by gestures bleeds
-                    // into those mutations and produces a quick crossfade —
-                    // perceived as a flicker on the close, like, and avatar
-                    // glyphs. Chrome content is discrete: we want a hard swap.
-                    .transaction(value: state.currentItemIndex) { $0.animation = nil }
-                    .transaction(value: state.currentUserIndex) { $0.animation = nil }
                     .allowsHitTesting(!state.isImmersive)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // Pages are laid out as one wide HStack offset behind the
+            // viewport; without clipping, neighbour pages bleed past the
+            // active page and read as ghost edges on either side.
+            .clipped()
             .contentShape(Rectangle())
             .simultaneousGesture(unifiedDragGesture(containerSize: geo.size))
         }
@@ -113,13 +113,27 @@ struct StoryViewerView: View {
         let width = containerSize.width
         let baseOffset = -CGFloat(state.currentUserIndex) * width + horizontalDrag
         return HStack(spacing: 0) {
-            ForEach(Array(state.users.enumerated()), id: \.element.id) { index, story in
+            // `id: \.offset` instead of the story id: pagination intentionally
+            // repeats users within a page (CLAUDE.md: "intra-page dedup is
+            // acceptable"), so two slots can share the same Story.id. The
+            // ForEach key must be the slot index, not the element identity,
+            // otherwise SwiftUI logs "ID X occurs multiple times" and picks
+            // an arbitrary view to render — which is what causes the random
+            // page-content swap during user changes.
+            ForEach(Array(state.users.enumerated()), id: \.offset) { index, story in
                 StoryViewerPage(
                     state: state,
                     item: page(for: story, isActive: index == state.currentUserIndex),
                     isActive: index == state.currentUserIndex,
                 )
                 .frame(width: width, height: containerSize.height)
+                // Clip each page to its own frame *before* applying the
+                // parallax scale — `aspectRatio(.fill)` on the image
+                // overflows the LazyImage box, and without a per-page clip
+                // the overflow bleeds onto the neighbouring page during a
+                // horizontal drag (you see the next image creeping into
+                // the active page).
+                .clipped()
                 // Adjacent pages render with a parallax tint *only during
                 // a horizontal drag*. We don't fade them on a vertical
                 // dismiss drag — neighbours stay flat behind the active
@@ -130,6 +144,15 @@ struct StoryViewerView: View {
         }
         .frame(width: width, alignment: .leading)
         .offset(x: baseOffset)
+        // No implicit animation on user-index changes — the swipe path
+        // animates `horizontalDrag` explicitly and flips the index with
+        // `disablesAnimations: true`. Without this, SwiftUI tries to
+        // crossfade the page content during the index swap, which reads
+        // as a flicker on the chrome (header/footer/progress bar) and
+        // produces "Invalid sample" warnings when the implicit timeline
+        // collides with our manual one.
+        .animation(nil, value: state.currentUserIndex)
+        .animation(nil, value: state.currentItemIndex)
         // Vertical dismiss drag transforms the whole pager as one card,
         // not each page individually. This avoids neighbour pages
         // bleeding into the active page during a swipe-down — the
@@ -150,17 +173,17 @@ struct StoryViewerView: View {
     // MARK: - Unified drag gesture
 
     /// Single drag gesture that arbitrates between horizontal user-pagination
-    /// and vertical swipe-to-dismiss. Axis lock fires after the first 12pt
-    /// of translation and is stable for the rest of the gesture — diagonal
-    /// drags resolve cleanly to one axis instead of jittering between
-    /// horizontal pager offset and vertical dismiss offset.
+    /// and vertical swipe-to-dismiss. The minimum distance keeps pure taps
+    /// out of the drag path; axis lock fires on first engagement and is
+    /// stable for the rest of the gesture — diagonal drags resolve cleanly
+    /// to one axis instead of jittering between horizontal pager offset and
+    /// vertical dismiss offset.
     private func unifiedDragGesture(containerSize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
+        DragGesture(minimumDistance: Self.dragMinimumDistance)
             .onChanged { value in
                 if lockedAxis == nil {
                     let dx = abs(value.translation.width)
                     let dy = abs(value.translation.height)
-                    guard max(dx, dy) >= Self.axisLockTranslation else { return }
                     lockedAxis = dx >= dy ? .horizontal : .vertical
                 }
                 switch lockedAxis {
@@ -195,13 +218,46 @@ struct StoryViewerView: View {
         let snapBack: Animation = reduceMotion
             ? .linear(duration: 0)
             : .spring(response: 0.45, dampingFraction: 0.85)
-        withAnimation(snapBack) {
-            horizontalDrag = 0
-        }
-        if commitsForward {
-            state.nextUser()
-        } else if commitsBackward {
-            state.previousUser()
+
+        // Commit path: animate the drag to a *full-page* offset matching the
+        // direction of travel, *then* swap the user index and reset the drag
+        // to zero in the same transaction. Without this two-step, the index
+        // flip is instantaneous (offset jumps by ±width) while `horizontalDrag`
+        // is still mid-snap — the user sees a one-frame tear that reads as
+        // the new page being cropped on the wrong side.
+        let canGoForward = state.currentUserIndex + 1 < state.users.count
+        let canGoBackward = state.currentUserIndex > 0
+        if commitsForward, canGoForward {
+            withAnimation(snapBack) {
+                horizontalDrag = -containerWidth
+            } completion: {
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) {
+                    state.nextUser()
+                    horizontalDrag = 0
+                }
+            }
+        } else if commitsBackward, canGoBackward {
+            withAnimation(snapBack) {
+                horizontalDrag = containerWidth
+            } completion: {
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) {
+                    state.previousUser()
+                    horizontalDrag = 0
+                }
+            }
+        } else {
+            // Boundary or non-committing drag: snap back to the current page
+            // without changing the index. `nextUser()` at the last user
+            // would dismiss; we honour that path explicitly so the animated
+            // commit doesn't fight the dismiss transition.
+            withAnimation(snapBack) {
+                horizontalDrag = 0
+            }
+            if commitsForward { state.nextUser() }
         }
     }
 
