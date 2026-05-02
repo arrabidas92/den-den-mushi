@@ -14,9 +14,9 @@ Rationale:
 ## Folder structure
 
 ```
-StoriesTest/
+Stories/
 ├── App/
-│   └── StoriesTestApp.swift              // entry, composition root
+│   └── StoriesApp.swift              // entry, composition root
 │
 ├── Features/
 │   ├── StoryList/
@@ -67,7 +67,7 @@ StoriesTest/
     ├── Extensions/
     └── Haptics.swift
 
-StoriesTestTests/
+StoriesTests/
 ├── Unit/
 │   ├── PersistedUserStateStoreTests.swift
 │   ├── LocalStoryRepositoryTests.swift
@@ -106,7 +106,7 @@ MVVM per feature. View consumes a `@Observable` ViewModel via `@Bindable`. ViewM
 Concrete implementations. Each repository is an `actor` to provide thread-safety by language design rather than convention. Image loading is wrapped, not exposed directly.
 
 ### DesignSystem
-No business logic. Tokens + reusable components. Independently previewable. Could be extracted to a Swift Package in a real project; not worth the friction in a test.
+No business logic. Tokens + reusable components. Independently previewable. Could be extracted to a Swift Package in a real project (this is the layer most naturally reusable); see *Modularity: why no SPM* below for the trade-off.
 
 ### Core
 Cross-cutting helpers. Haptics, extensions. Keep small.
@@ -115,18 +115,20 @@ Cross-cutting helpers. Haptics, extensions. Keep small.
 
 Swift 6 strict concurrency mode enabled. This is deliberate: it forces correctness at compile time and signals senior-level fluency.
 
+**Default Actor Isolation = MainActor** is enabled in build settings (Xcode 16+ / SwiftPM). Consequence: all unannotated module code is implicitly `@MainActor`. ViewModels therefore carry no explicit `@MainActor` — they inherit it from the module, the same way SwiftUI `View` already inherits it from the `View` protocol under iOS 18. Only types that *deviate* from this default (the `actor`s in the Data layer) or that make isolation explicit because of an external constraint (`ImagePrefetchHandle`, because Nuke 12 marks `ImagePrefetcher` as `@MainActor`) carry an annotation. Writing `@MainActor` everywhere on an iOS 18 / Swift 6 project looks like Swift 5 strict-mode code ported as-is — the omission is the modern signal.
+
 ```
 Repositories          actor, protocols are Sendable
 State stores          actor, protocols are Sendable
-ViewModels            @MainActor (so `@Observable` properties drive SwiftUI on main)
+ViewModels            module default MainActor (annotation unnecessary)
 Models                Sendable (struct + Codable + Hashable)
-Image loader          Nuke pipeline configured at app start; prefetch handles are @MainActor
+Image loader          Nuke pipeline configured at app start; prefetch handles are @MainActor (Nuke constraint)
 Tasks                 structured concurrency only; no DispatchQueue
 Clock                 any Clock<Duration> injected — ContinuousClock in prod, TestClock in tests
 Timer                 Task + clock.sleep, never Timer.scheduledTimer, never Task.sleep directly
 ```
 
-Protocols crossing actor hops are explicitly `Sendable`:
+Protocols whose instances are shared across actors (here: a `MainActor` ViewModel holding a reference to an `actor` repository) are declared `Sendable`. This forces every conformer to prove it can be transferred safely between isolation contexts — automatic for an `actor`, explicit for a `class`:
 
 ```swift
 protocol StoryRepository: Sendable {
@@ -147,13 +149,13 @@ ViewModel pattern — the viewer state is split into two collaborators rather th
 ```swift
 // PlaybackController — owns the timer and the 0...1 progress for the current item.
 // Knows nothing about which item is current, who the user is, or how to dismiss.
-@MainActor
+// MainActor inherited from the module default isolation; no explicit annotation.
 @Observable
 final class PlaybackController {
     private(set) var progress: Double = 0
     private(set) var isPaused = false
 
-    var onItemEnd: (@MainActor () -> Void)?    // wired by ViewerStateModel
+    var onItemEnd: (() -> Void)?    // wired by ViewerStateModel; MainActor by module default
 
     private let clock: any Clock<Duration>
     private let itemDuration: Duration
@@ -173,7 +175,7 @@ final class PlaybackController {
 // ViewerStateModel — owns the navigation, seen, like, dismiss, and the
 // transient gesture state (immersive, drag offset, heart pop).
 // Drives PlaybackController; reacts to its `onItemEnd` to advance.
-@MainActor
+// MainActor inherited from the module default isolation; no explicit annotation.
 @Observable
 final class ViewerStateModel {
     private(set) var currentUserIndex: Int
@@ -374,7 +376,7 @@ ViewModel triggers `loadPage(currentPage + 1)` when the user is within 3 items o
 The trigger is wired via iOS 18's `onScrollGeometryChange(for:of:action:)`, which exposes `contentOffset`, `contentSize`, and `containerSize` in real time — no `GeometryReader` + `PreferenceKey` plumbing, and no reliance on `onAppear` of a "sentinel" cell (which is fragile under cell recycling and fires on backward-scroll re-entry). The "near end" predicate is a pure function on the ViewModel so the test plan covers it directly without a View:
 
 ```swift
-@MainActor
+// MainActor inherited from the module default isolation; no explicit annotation.
 @Observable
 final class StoryListViewModel {
     private(set) var pages: [Story] = []
@@ -480,7 +482,7 @@ Strategy:
 Logging uses `os.Logger`, one logger per subsystem:
 
 ```swift
-private let subsystem = Bundle.main.bundleIdentifier ?? "StoriesTest"
+private let subsystem = Bundle.main.bundleIdentifier ?? "Stories"
 
 extension Logger {
     static let app         = Logger(subsystem: subsystem, category: "app")
@@ -491,7 +493,7 @@ extension Logger {
 }
 ```
 
-Subsystem derived from the candidate's own bundle identifier (e.g. `com.<candidate>.StoriesTest`) — not BeReal's namespace, which would look like bundle-ID squatting in review.
+Subsystem derived from the candidate's own bundle identifier (e.g. `com.<candidate>.Stories`) — not BeReal's namespace, which would look like bundle-ID squatting in review.
 
 Discipline:
 - `.debug` for state transitions (item start, like toggle), stripped from release builds by `Logger`.
@@ -550,7 +552,7 @@ State lives in `Application Support/`, *not* `Documents/`:
 - `Application Support/` is the documented home for app-private state and persists across launches.
 
 ```
-~/Library/Application Support/StoriesTest/state.json
+~/Library/Application Support/Stories/state.json
 ```
 
 The directory is created on first launch. The file URL sets `URLResourceValues.isExcludedFromBackup = true`: although `Application Support/` is included in device backups by default, this state is reproducible (a fresh install starts empty and rebuilds organically), so spending iCloud bandwidth on it would be waste.
@@ -664,13 +666,13 @@ This is the only place an error is surfaced inside the immersive viewer chrome. 
 
 ## Dependency injection
 
-No container. Constructor injection only. Composition root in `StoriesTestApp.swift`.
+No container. Constructor injection only. Composition root in `StoriesApp.swift`.
 
 `PersistedUserStateStore.init` is `async throws` (it loads or creates the JSON file), so it cannot be called from `App.init`. Pattern: hold the root ViewModel as an optional `@State`, hydrate it from a `.task` on the root View, and show a thin loading state until ready.
 
 ```swift
 @main
-struct StoriesTestApp: App {
+struct StoriesApp: App {
     @State private var listViewModel: StoryListViewModel?
 
     init() {
@@ -735,7 +737,7 @@ Reduced motion and Dynamic Type are explicitly out of scope (CLAUDE.md).
 
 ## Deep-link entry (out of scope, mentioned)
 
-A real Stories product would accept `bereal://story/{userID}/item/{itemID}` and open the viewer pre-positioned. The architecture supports it cheaply: the viewer ViewModel already takes `(users, startUserIndex, startItemIndex)`. A `URL` handler in `StoriesTestApp` would map the link to those parameters and present the cover. Not implemented for the test; flagged in the README as a deliberate skip.
+A real Stories product would accept `bereal://story/{userID}/item/{itemID}` and open the viewer pre-positioned. The architecture supports it cheaply: the viewer ViewModel already takes `(users, startUserIndex, startItemIndex)`. A `URL` handler in `StoriesApp` would map the link to those parameters and present the cover. Not implemented for the test; flagged in the README as a deliberate skip.
 
 ## Snapshot determinism
 
@@ -748,11 +750,39 @@ Strategy:
 
 Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 
+## Modularity: why no SPM
+
+The brief mentions a "modular architecture". The word has two readings:
+
+1. **Modularity as decoupling** — separated layers, explicit boundaries, unidirectional dependencies, isolated testability.
+2. **Modularity as packaging** — each layer in a local Swift Package, boundary enforced by the compiler.
+
+This implementation picks (1). Layers are folders, not packages, but the boundaries are real:
+- `Domain/` imports only `Foundation` (grep-verifiable, project hard rule).
+- All cross-layer communication goes through `Sendable` protocols (`StoryRepository`, `UserStateRepository`).
+- Dependency injection is constructor-only, no container — the composition root fits in 30 lines.
+- ViewModels never reference concrete types from `Data/`.
+
+**Why not extract into Swift Packages:**
+
+| SPM cost on this project | Detail |
+|---|---|
+| Initial setup | ~2-3h for 4-5 packages + manifests + resources (`stories.json` via `Bundle.module`) + per-package test targets |
+| Ongoing friction | Every type crossing a boundary must be `public`; multiplies diffs and slips |
+| Build times | Slower in clean builds at this scale; SPM parallelisation only pays off past ~50k LOC |
+| Demo risk | A package that fails to resolve locally on review day = blocking, for zero evaluated benefit |
+| SwiftUI previews | Behaviour varies between Xcode/SPM; friction without reviewer-visible value |
+
+The unique benefit of SPM here would be *mechanically forcing* that no `SwiftUI` import leaks into `Domain/`. With a four-file Domain written by a single author, that is trivial discipline that does not justify the cost.
+
+**When it would be worth it:** multiple teams touching the same codebase, or a `DesignSystem` actually consumed by several apps. Neither is true within the test scope. Extraction remains a one-day refactor if the project grows — the logical boundary is already there.
+
 ## Trade-off summary
 
 | Decision | Chosen | Alternative | Why |
 |---|---|---|---|
 | Architecture | MVVM + Repository | TCA, Clean Arch | Best ratio of structure to ceremony for this scope |
+| Modularity | Folders + `Sendable` protocols at boundaries | Local Swift Packages per layer | Logical boundary already explicit (pure Domain, init-based DI, Sendable protocols); SPM packaging adds ~4-6h of plumbing + demo risk for a benefit not evaluated at this scale. See § *Modularity* above. |
 | State mgmt | `@Observable` | `ObservableObject` | iOS 17+ native, no `@Published` boilerplate, signals modern stack |
 | Deployment target | iOS 18 | iOS 17 | Unlocks `.navigationTransition(.zoom)` (the product's marquee transition), `onScrollGeometryChange` (testable pagination trigger), and Swift 6 View-isolation simplifications. Cost is negligible 20 months after release. |
 | Pagination trigger | `onScrollGeometryChange` → pure VM predicate | `onAppear` sentinel / `GeometryReader` + `PreferenceKey` | Decision moves out of the View into a unit-testable function; matches the "no business logic in Views" rule for this code path |
@@ -772,6 +802,6 @@ Result: snapshot tests are hermetic, deterministic, and run in <1s each.
 ## What this architecture is NOT trying to be
 
 - A reusable framework for stories. It's a focused implementation.
-- A microservices-grade modular monolith. Folders, not Swift Packages, are the boundary.
+- A microservices-grade modular monolith. Folders, not Swift Packages, are the boundary — defended in § *Modularity: why no SPM*. The brief's "modular" is read as logical decoupling (pure Domain, protocols at boundaries, init-based DI), not physical packaging.
 - A platform-agnostic abstraction. iOS-first, SwiftUI-first.
 - A demonstration of every iOS pattern. Show the right ones for the job.

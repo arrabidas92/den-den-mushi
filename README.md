@@ -13,15 +13,15 @@ Test technique iOS Senior pour BeReal — implémentation d'une fonctionnalité 
 ## Lancer le projet
 
 ```bash
-open StoriesTest.xcodeproj
+open Stories.xcodeproj
 ```
 
-Puis lancer la cible `StoriesTest` sur un simulateur iPhone 15 Pro (cible recommandée pour la cohérence des snapshots).
+Puis lancer la cible `Stories` sur un simulateur iPhone 15 Pro (cible recommandée pour la cohérence des snapshots).
 
 Pour lancer les tests:
 
 ```bash
-xcodebuild test -scheme StoriesTest -destination 'platform=iOS Simulator,name=iPhone 15 Pro'
+xcodebuild test -scheme Stories -destination 'platform=iOS Simulator,name=iPhone 15 Pro'
 ```
 
 ## Documentation
@@ -47,7 +47,7 @@ actor LocalStoryRepository / PersistedUserStateStore
 - **Domain** pur (Foundation only), protocoles + modèles `Sendable`
 - **Repositories** sont des `actor`s (thread-safety par construction)
 - **ViewModels** `@MainActor`, pas de logique métier dans les Views
-- **Composition root** dans `StoriesTestApp.swift`, injection par init, pas de container DI
+- **Composition root** dans `StoriesApp.swift`, injection par init, pas de container DI
 
 Pour le détail des décisions et alternatives écartées (TCA, Clean Arch, SwiftData, UserDefaults, AsyncImage), voir [`architecture.md`](./architecture.md).
 

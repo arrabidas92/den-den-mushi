@@ -4,6 +4,14 @@
 
 ## User settings
 xcuserdata/
+*.xcuserstate
+
+## macOS
+.DS_Store
+
+## Xcode build artefacts
+DerivedData/
+build/
 
 ## Obj-C/Swift specific
 *.hmap
