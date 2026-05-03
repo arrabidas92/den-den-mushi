@@ -152,20 +152,6 @@ struct StoryListView: View {
         .preferredColorScheme(.dark)
 }
 
-#Preview("Initial loading skeleton") {
-    let repo = PreviewStoryRepository(pages: [[]])
-    let vm = StoryListViewModel(
-        storyRepository: repo,
-        userStateRepository: EphemeralUserStateStore(),
-        prefetcher: nil,
-    )
-    Task { @MainActor in await vm.loadInitial() }
-    return StoryListView(viewModel: vm)
-        .frame(height: 110)
-        .background(Color.background)
-        .preferredColorScheme(.dark)
-}
-
 private actor PreviewStoryRepository: StoryRepository {
 
     private let pages: [[Story]]
