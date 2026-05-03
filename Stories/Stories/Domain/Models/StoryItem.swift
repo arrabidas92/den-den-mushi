@@ -24,28 +24,21 @@ nonisolated struct StoryItem: Sendable, Hashable, Codable, Identifiable {
         self.id = try c.decode(String.self, forKey: .id)
         self.imageURL = try c.decode(URL.self, forKey: .imageURL)
         let iso = try c.decode(String.self, forKey: .createdAtISO)
-        guard let date = ISO8601DateFormatter.shared.date(from: iso) else {
+        do {
+            self.createdAt = try Date(iso, strategy: .iso8601)
+        } catch {
             throw DecodingError.dataCorruptedError(
                 forKey: .createdAtISO,
                 in: c,
                 debugDescription: "expected ISO8601, got \(iso)"
             )
         }
-        self.createdAt = date
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(imageURL, forKey: .imageURL)
-        try c.encode(ISO8601DateFormatter.shared.string(from: createdAt), forKey: .createdAtISO)
+        try c.encode(createdAt.formatted(.iso8601), forKey: .createdAtISO)
     }
-}
-
-private extension ISO8601DateFormatter {
-    nonisolated(unsafe) static let shared: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
 }

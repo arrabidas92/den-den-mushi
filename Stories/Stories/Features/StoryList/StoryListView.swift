@@ -10,7 +10,6 @@ struct StoryListView: View {
     var onSelect: ((Story) -> Void)? = nil
 
     @State private var presentedViewerState: ViewerStateModel?
-    @State private var presentedStory: Story?
 
     private static let skeletonCount = 8
 
@@ -45,7 +44,6 @@ struct StoryListView: View {
                             // in-session seen set synchronously so the ring
                             // is in its final state on the first frame of
                             // the matched zoom-out.
-                            presentedStory = nil
                             viewModel.applySessionSeen(state.sessionSeenItemIDs)
                             Task { await viewModel.refreshFullySeen(for: currentStory) }
                         },
@@ -67,6 +65,10 @@ struct StoryListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.background)
         .task {
+            // Prewarmed from the list body (not the viewer's `.task`) so
+            // the generators are hot before the first tap. See `Haptics`
+            // for the cold-start cost.
+            Haptics.prewarm()
             await viewModel.loadInitial()
         }
     }
@@ -76,15 +78,8 @@ struct StoryListView: View {
             onSelect(story)
             return
         }
-        // Prewarm on the opening tap, not on viewer appearance — calling
-        // from `.task` inside the viewer is racy with a fast first tap and
-        // reintroduces the cold-start hang on the first like.
-        Haptics.prewarm()
-        Task {
-            guard let state = await viewModel.makeViewerState(startingAt: story) else { return }
-            presentedStory = story
-            presentedViewerState = state
-        }
+        guard let state = viewModel.makeViewerState(startingAt: story) else { return }
+        presentedViewerState = state
     }
 
     @ViewBuilder

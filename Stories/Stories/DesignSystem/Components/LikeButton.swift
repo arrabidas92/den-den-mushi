@@ -36,9 +36,7 @@ struct LikeButton: View {
         guard !reduceMotion else { return }
         withAnimation(Motion.likeButtonSpring) {
             scale = 1.2
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(120))
+        } completion: {
             withAnimation(Motion.likeButtonSpring) {
                 scale = 1.0
             }

@@ -22,7 +22,7 @@ final class PlaybackController {
 
     init(
         clock: any Clock<Duration> = ContinuousClock(),
-        itemDuration: Duration = .seconds(7),
+        itemDuration: Duration = .seconds(5),
         tickInterval: Duration = .milliseconds(50),
     ) {
         self.clock = clock
@@ -89,11 +89,3 @@ final class PlaybackController {
     }
 }
 
-private extension Duration {
-
-    static func / (lhs: Duration, rhs: Duration) -> Double {
-        let lhsTotal = Double(lhs.components.seconds) + Double(lhs.components.attoseconds) / 1e18
-        let rhsTotal = Double(rhs.components.seconds) + Double(rhs.components.attoseconds) / 1e18
-        return lhsTotal / rhsTotal
-    }
-}

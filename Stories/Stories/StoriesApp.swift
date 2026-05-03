@@ -44,9 +44,9 @@ struct StoriesApp: App {
     private func bootstrap() async {
         let storyRepo: LocalStoryRepository
         do {
-            storyRepo = try LocalStoryRepository()
+            storyRepo = try LocalStoryRepository.bundled()
         } catch let error as StoryError {
-            Logger.app.error("Story repo init failed: \(String(describing: error), privacy: .public)")
+            Logger.app.error("Story repo init failed: \(error.localizedDescription, privacy: .public)")
             bootstrapError = error
             return
         } catch {

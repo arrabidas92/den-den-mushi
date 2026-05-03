@@ -16,9 +16,3 @@ enum Motion {
     static let likeButtonSpring: Animation = .spring(response: 0.3, dampingFraction: 0.6)
 }
 
-extension Duration {
-    var seconds: Double {
-        let (s, attoseconds) = components
-        return Double(s) + Double(attoseconds) / 1e18
-    }
-}

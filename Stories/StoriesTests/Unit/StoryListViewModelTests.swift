@@ -263,7 +263,7 @@ struct StoryListViewModelTests {
         let stories = Self.makeStories(1)
         let (vm, _, _) = Self.makeVM(pages: [stories])
         await vm.loadInitial()
-        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        let viewer = vm.makeViewerState(startingAt: stories[0])
         #expect(viewer?.currentItemIndex == 0)
     }
 
@@ -275,7 +275,7 @@ struct StoryListViewModelTests {
 
         let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
         await vm.loadInitial()
-        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        let viewer = vm.makeViewerState(startingAt: stories[0])
         #expect(viewer?.currentItemIndex == 1)
     }
 
@@ -287,7 +287,7 @@ struct StoryListViewModelTests {
 
         let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
         await vm.loadInitial()
-        let viewer = await vm.makeViewerState(startingAt: stories[0])
+        let viewer = vm.makeViewerState(startingAt: stories[0])
         #expect(viewer?.currentItemIndex == 0)
     }
 }

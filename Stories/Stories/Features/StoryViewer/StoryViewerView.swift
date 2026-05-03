@@ -105,7 +105,8 @@ struct StoryViewerView: View {
         return HStack(spacing: 0) {
             // Slot index, not story id: pagination intentionally repeats users
             // within a page, so two slots can share the same Story.id.
-            ForEach(Array(state.users.enumerated()), id: \.offset) { index, story in
+            ForEach(state.users.indices, id: \.self) { index in
+                let story = state.users[index]
                 StoryViewerPage(
                     state: state,
                     item: page(for: story, isActive: index == state.currentUserIndex),
@@ -182,36 +183,42 @@ struct StoryViewerView: View {
         let canGoForward = state.currentUserIndex + 1 < state.users.count
         let canGoBackward = state.currentUserIndex > 0
         if commitsForward, canGoForward {
-            // Two-step (animate to ±width, then swap index + reset to 0 in a
-            // single transaction) so the index flip and the offset reset land
-            // on the same frame — otherwise the new page is cropped on the
-            // wrong side for one frame.
-            withAnimation(snapBack) {
-                horizontalDrag = -containerWidth
-            } completion: {
-                var t = Transaction()
-                t.disablesAnimations = true
-                withTransaction(t) {
-                    state.nextUser()
-                    horizontalDrag = 0
-                }
-            }
+            commitUserChange(
+                animationTo: -containerWidth,
+                animation: snapBack,
+                advance: state.nextUser,
+            )
         } else if commitsBackward, canGoBackward {
-            withAnimation(snapBack) {
-                horizontalDrag = containerWidth
-            } completion: {
-                var t = Transaction()
-                t.disablesAnimations = true
-                withTransaction(t) {
-                    state.previousUser()
-                    horizontalDrag = 0
-                }
-            }
+            commitUserChange(
+                animationTo: containerWidth,
+                animation: snapBack,
+                advance: state.previousUser,
+            )
         } else {
             withAnimation(snapBack) {
                 horizontalDrag = 0
             }
             if commitsForward { state.nextUser() }
+        }
+    }
+
+    /// Two-step (animate to ±width, then swap index + reset to 0 in a single
+    /// transaction) so the index flip and the offset reset land on the same
+    /// frame — otherwise the new page is cropped on the wrong side for one frame.
+    private func commitUserChange(
+        animationTo offset: CGFloat,
+        animation: Animation,
+        advance: @escaping () -> Void,
+    ) {
+        withAnimation(animation) {
+            horizontalDrag = offset
+        } completion: {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                advance()
+                horizontalDrag = 0
+            }
         }
     }
 

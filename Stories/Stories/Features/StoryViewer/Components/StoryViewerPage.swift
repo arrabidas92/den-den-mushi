@@ -134,13 +134,19 @@ struct StoryViewerPage: View {
                     }
                 }
                 .task(id: ImageOutcome.from(state: imageState, itemID: item.id)) {
+                    // Snapshot the id at task-start: a body re-eval that races
+                    // an in-flight task could otherwise write the previous
+                    // item's outcome into `loadedItemID` for the new item.
+                    let taskItemID = item.id
                     if let uiImage = imageState.imageContainer?.image {
+                        guard taskItemID == item.id else { return }
                         lastImage = Image(uiImage: uiImage)
-                        loadedItemID = item.id
+                        loadedItemID = taskItemID
                         loadFailed = false
                         isRetrying = false
-                        state.markItemReady(itemID: item.id)
+                        state.markItemReady(itemID: taskItemID)
                     } else if imageState.error != nil {
+                        guard taskItemID == item.id else { return }
                         handleLoadFailure()
                     }
                 }

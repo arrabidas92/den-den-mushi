@@ -28,14 +28,14 @@ struct LocalStoryRepositoryTests {
 
     @Test("loads the bundled stories.json without throwing")
     func loadsBundleJSON() async throws {
-        let repo = try LocalStoryRepository(bundle: .main)
+        let repo = try LocalStoryRepository.bundled(bundle: .main)
         let page = try await repo.loadPage(0)
         #expect(page.count == 10)
     }
 
     @Test("missing bundle resource throws bundleResourceMissing")
     func missingResourceThrows() async {
-        let repo = try? LocalStoryRepository(bundle: .main, resource: "does-not-exist")
+        let repo = try? LocalStoryRepository.bundled(bundle: .main, resource: "does-not-exist")
         #expect(repo == nil)
     }
 

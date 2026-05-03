@@ -6,11 +6,6 @@ import os
 /// write. `flushNow()` is the explicit drain called on dismiss/background.
 actor PersistedUserStateStore: UserStateRepository {
 
-    private nonisolated static let log = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "Stories",
-        category: "persistence"
-    )
-
     private var state: UserState
     private let fileURL: URL
     private let clock: any Clock<Duration>
@@ -118,7 +113,7 @@ actor PersistedUserStateStore: UserStateRepository {
             let data = try JSONEncoder().encode(snapshot)
             try data.write(to: fileURL, options: [.atomic])
         } catch {
-            Self.log.error("Flush failed: \(error.localizedDescription, privacy: .public)")
+            Logger.persistence.error("Flush failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -131,13 +126,13 @@ actor PersistedUserStateStore: UserStateRepository {
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
-            log.error("Read failed: \(error.localizedDescription, privacy: .public)")
+            Logger.persistence.error("Read failed: \(error.localizedDescription, privacy: .public)")
             return .empty
         }
         do {
             return try JSONDecoder().decode(UserState.self, from: data)
         } catch {
-            log.error("State file corrupt, deleting: \(error.localizedDescription, privacy: .public)")
+            Logger.persistence.error("State file corrupt, deleting: \(error.localizedDescription, privacy: .public)")
             try? fm.removeItem(at: fileURL)
             return .empty
         }

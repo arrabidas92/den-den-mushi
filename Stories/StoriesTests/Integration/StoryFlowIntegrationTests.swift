@@ -44,7 +44,7 @@ struct StoryFlowIntegrationTests {
         #expect(list.fullySeenStoryIDs.isEmpty)
 
         let openedStory = list.pages[3]
-        guard let viewer = await list.makeViewerState(startingAt: openedStory) else {
+        guard let viewer = list.makeViewerState(startingAt: openedStory) else {
             Issue.record("makeViewerState should resolve the index for a known story")
             return
         }

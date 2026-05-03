@@ -31,7 +31,7 @@ final class StoryListViewModel {
     private let pageSize: Int
     private let triggerOffset: Int
     private let storyRepository: StoryRepository
-    let userStateRepository: UserStateRepository
+    private let userStateRepository: UserStateRepository
     private let prefetcher: ImagePrefetchHandle?
 
     private var nextPageToLoad = 0
@@ -158,9 +158,9 @@ final class StoryListViewModel {
 
     /// Resume rule: start at the first unseen item; if every item is already
     /// seen, restart from the first (Instagram parity).
-    func makeViewerState(startingAt story: Story) async -> ViewerStateModel? {
+    func makeViewerState(startingAt story: Story) -> ViewerStateModel? {
         guard let index = pages.firstIndex(where: { $0.id == story.id }) else { return nil }
-        let resumeIndex = await firstUnseenIndex(in: story) ?? 0
+        let resumeIndex = firstUnseenIndex(in: story) ?? 0
         return ViewerStateModel(
             users: pages,
             startUserIndex: index,
@@ -180,13 +180,8 @@ final class StoryListViewModel {
         return Array(pages[beforeCount..<pages.count])
     }
 
-    private func firstUnseenIndex(in story: Story) async -> Int? {
-        for (index, item) in story.items.enumerated() {
-            if await userStateRepository.isSeen(item.id) == false {
-                return index
-            }
-        }
-        return nil
+    private func firstUnseenIndex(in story: Story) -> Int? {
+        story.items.firstIndex { !knownSeenItemIDs.contains($0.id) }
     }
 
     // MARK: - Prefetch

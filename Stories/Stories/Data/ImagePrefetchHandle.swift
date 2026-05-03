@@ -11,8 +11,4 @@ final class ImagePrefetchHandle {
     func prefetch(_ urls: [URL]) {
         prefetcher.startPrefetching(with: urls)
     }
-
-    func cancel() {
-        prefetcher.stopPrefetching()
-    }
 }

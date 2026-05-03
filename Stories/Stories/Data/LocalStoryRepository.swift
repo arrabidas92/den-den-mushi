@@ -9,7 +9,16 @@ actor LocalStoryRepository: StoryRepository {
     private let baseStories: [Story]
     private let pageSize: Int
 
-    init(bundle: Bundle = .main, resource: String = "stories", pageSize: Int = 10) throws {
+    init(stories: [Story], pageSize: Int = 10) {
+        self.baseStories = stories
+        self.pageSize = pageSize
+    }
+
+    static func bundled(
+        bundle: Bundle = .main,
+        resource: String = "stories",
+        pageSize: Int = 10,
+    ) throws -> LocalStoryRepository {
         guard let url = bundle.url(forResource: resource, withExtension: "json") else {
             throw StoryError.bundleResourceMissing(name: "\(resource).json")
         }
@@ -19,18 +28,13 @@ actor LocalStoryRepository: StoryRepository {
         } catch {
             throw StoryError.persistenceUnavailable(underlying: error)
         }
+        let stories: [Story]
         do {
-            let envelope = try JSONDecoder().decode(Envelope.self, from: data)
-            self.baseStories = envelope.users
+            stories = try JSONDecoder().decode(Envelope.self, from: data).users
         } catch {
             throw StoryError.decodingFailed(underlying: error)
         }
-        self.pageSize = pageSize
-    }
-
-    init(stories: [Story], pageSize: Int = 10) {
-        self.baseStories = stories
-        self.pageSize = pageSize
+        return LocalStoryRepository(stories: stories, pageSize: pageSize)
     }
 
     func loadPage(_ pageIndex: Int) async throws -> [Story] {
