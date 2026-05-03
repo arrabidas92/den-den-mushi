@@ -74,3 +74,4 @@ struct StoryFlowIntegrationTests {
         #expect(list.fullySeenStoryIDs.contains(openedStory.id) == true)
     }
 }
+ 

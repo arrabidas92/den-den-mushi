@@ -12,7 +12,7 @@ final class NetworkMonitor {
 
     private(set) var isOnline = true
 
-    nonisolated(unsafe) private let monitor = NWPathMonitor()
+    private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.stories.networkmonitor")
 
     init() {
