@@ -79,43 +79,50 @@ struct StoryViewerView: View {
                 // stays full-bleed and only fades, while image+chrome
                 // translate and scale together.
                 background
-                ZStack {
-                    pagedStack(containerSize: geo.size)
-                    ViewerChrome(
-                        user: state.currentUser.user,
-                        timestamp: state.currentItem.createdAt,
-                        itemCount: state.currentUser.items.count,
-                        currentItemIndex: state.currentItemIndex,
-                        isLiked: state.isLiked,
-                        isImmersive: state.isImmersive,
-                        playback: state.playback,
-                        onClose: state.dismiss,
-                        onToggleLike: state.toggleLike,
-                    )
-                    .opacity(state.isImmersive ? 0 : 1)
-                    // The chrome's `.animation(_:value: state.isImmersive)`
-                    // creates an ambient transaction that — without these
-                    // explicit opt-outs — sweeps every other state mutation
-                    // (item index, user index, like flip) into a fade
-                    // animation. The visible symptom is the close icon, like
-                    // heart, and avatar/timestamp re-rendering with a one-frame
-                    // crossfade on every item change. Pinning the implicit
-                    // animation to `isImmersive` alone keeps the chrome
-                    // diff-stable across navigation.
-                    .animation(nil, value: state.currentItemIndex)
-                    .animation(nil, value: state.currentUserIndex)
-                    .animation(nil, value: state.isLiked)
-                    .animation(Motion.fastAnimation(reduceMotion: reduceMotion), value: state.isImmersive)
-                    .allowsHitTesting(!state.isImmersive)
-                }
-                // Treat image + chrome as a single dismiss card: they
-                // translate and scale together so the chrome stays glued
-                // to the image during a swipe-down. Applying `.offset(y:)`
-                // only to the pagedStack (as before) made the image slide
-                // away from a stationary chrome — visually the story tore
-                // in half. Scaling around the gesture's anchor (top of
-                // the card) keeps the lift-away centre near the user's
-                // finger.
+                // Image + chrome translate and scale together as a single
+                // dismiss card so the chrome stays glued to the image during
+                // a swipe-down. Earlier this was applied to a ZStack wrapping
+                // both subtrees — but the snap-back `.spring` animation on
+                // `dragOffset/dragProgress` was an *ambient* parent animation
+                // and propagated into the chrome subtree, animating the scrim
+                // gradients, close button, and like icon (visible flicker).
+                // Applying the same transform to each subtree independently
+                // keeps the visual coupling but isolates the parent
+                // transaction, so a body re-eval triggered by a drag tick
+                // never reaches the chrome's gradient/icon diff path.
+                pagedStack(containerSize: geo.size)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .offset(y: state.dragOffset)
+                    .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15, anchor: .top)
+                // Scrims are rendered as their own subtree, *outside* the
+                // chrome's immersive opacity toggle. They stay mounted and
+                // fully opaque on every state change — long-press, tap
+                // forward, item swap, user swap. Why: previously the scrims
+                // sat as `.background` of the header/footer inside
+                // `ViewerChrome` and inherited the chrome's `opacity` on
+                // `isImmersive`, plus the structural diff when the footer
+                // toggled on `isCurrentItemFailed`. Both produced visible
+                // scrim flicker. Pulling them out to a stable, always-on
+                // subtree removes both ambient-animation paths in one move.
+                ViewerScrims()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .offset(y: state.dragOffset)
+                    .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15, anchor: .top)
+                ViewerChrome(
+                    user: state.currentUser.user,
+                    timestamp: state.currentItem.createdAt,
+                    itemCount: state.currentUser.items.count,
+                    currentItemIndex: state.currentItemIndex,
+                    isLiked: state.isLiked,
+                    isImmersive: state.isImmersive,
+                    isCurrentItemFailed: state.isCurrentItemFailed,
+                    playback: state.playback,
+                    reduceMotion: reduceMotion,
+                    onClose: state.dismiss,
+                    onToggleLike: state.toggleLike,
+                )
+                .allowsHitTesting(!state.isImmersive)
+                .frame(width: geo.size.width, height: geo.size.height)
                 .offset(y: state.dragOffset)
                 .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15, anchor: .top)
             }
@@ -424,12 +431,20 @@ private struct ViewerChrome: View {
     let currentItemIndex: Int
     let isLiked: Bool
     let isImmersive: Bool
+    let isCurrentItemFailed: Bool
     let playback: PlaybackController
+    let reduceMotion: Bool
     let onClose: () -> Void
     let onToggleLike: @MainActor () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
+            // Header subtree: immersive opacity is applied here, scoped via
+            // `.transaction(value: isImmersive)` so the fade only animates
+            // when `isImmersive` itself flips. Parent transactions (the
+            // user-swipe spring, the drag tick) reach this with `value`
+            // unchanged → no animation attaches → no flash on the close
+            // icon during tap-forward or user-swipe.
             VStack(spacing: Spacing.s) {
                 ProgressBarBinding(
                     count: itemCount,
@@ -444,24 +459,58 @@ private struct ViewerChrome: View {
                 )
             }
             .padding(.top, Spacing.s)
-            .background(alignment: .top) { Self.topScrim }
+            .opacity(isImmersive ? 0 : 1)
+            .transaction(value: isImmersive) { tx in
+                tx.animation = Motion.fastAnimation(reduceMotion: reduceMotion)
+            }
+
             Spacer()
+
             StoryViewerFooter(isLiked: isLiked, onToggleLike: onToggleLike)
                 .padding(.bottom, Spacing.s)
-                .background(alignment: .bottom) { Self.bottomScrim }
+                .opacity(isCurrentItemFailed ? 0 : 1)
+                .allowsHitTesting(!isCurrentItemFailed)
+                .transaction(value: isCurrentItemFailed) { tx in
+                    tx.animation = nil
+                }
+                .opacity(isImmersive ? 0 : 1)
+                .transaction(value: isImmersive) { tx in
+                    tx.animation = Motion.fastAnimation(reduceMotion: reduceMotion)
+                }
         }
     }
+}
 
-    // Scrims sit *behind* the chrome (header/progress at top, like button at
-    // bottom) to recover legibility when the underlying image is bright (sky,
-    // snow, beach). Without them, white username/timestamp text disappears
-    // into highlights and the chrome reads as broken. Functional, not
-    // decorative — the design.md "no gradients" rule targets the BeReal
-    // aesthetic (rings, canvas), but a legibility scrim is the same primitive
-    // Instagram uses and is invisible on dark images. Pinned to safe-area
-    // edges so the fade lands beyond the status bar / home indicator.
-    // `allowsHitTesting(false)` so taps and long-press still reach the page.
-    //
+// MARK: - Scrims
+
+/// Permanent legibility scrims, rendered as a sibling subtree of the chrome
+/// rather than as `.background` of the header/footer. Why split them out:
+/// the chrome fades on `isImmersive` (long-press) and the footer toggles on
+/// `isCurrentItemFailed`. When the scrims rode along inside the chrome they
+/// inherited both transitions, producing visible scrim flicker on every
+/// long-press, tap-forward, and load failure. Keeping them in their own
+/// always-mounted, always-opaque subtree means no parent state change
+/// diffs the gradient — the scrims are visually constant for the entire
+/// viewer session.
+///
+/// Functional, not decorative: the design.md "no gradients" rule targets
+/// the BeReal aesthetic (rings, canvas), but a legibility scrim is the same
+/// primitive Instagram uses and is invisible on dark images.
+private struct ViewerScrims: View {
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Self.topGradient
+                .frame(height: Self.scrimHeight)
+                .ignoresSafeArea(edges: .top)
+            Spacer()
+            Self.bottomGradient
+                .frame(height: Self.scrimHeight)
+                .ignoresSafeArea(edges: .bottom)
+        }
+        .allowsHitTesting(false)
+    }
+
     // Curve choice: a three-stop gradient (dense / mid / clear) holds opacity
     // through the band where the text actually sits, then drops to zero in
     // the lower half. A two-stop linear ramp made the fall-off start
@@ -470,35 +519,28 @@ private struct ViewerChrome: View {
     // breaks against a bright sky.
     private static let scrimHeight: CGFloat = 180
 
-    private static var topScrim: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Color.black.opacity(0.65), location: 0.0),
-                .init(color: Color.black.opacity(0.45), location: 0.5),
-                .init(color: Color.black.opacity(0.0),  location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom,
-        )
-        .frame(height: scrimHeight)
-        .ignoresSafeArea(edges: .top)
-        .allowsHitTesting(false)
-    }
+    // Stored as `static let` so the gradient value is constructed exactly
+    // once per process and SwiftUI never sees a fresh `LinearGradient`
+    // instance on body re-evaluation.
+    private static let topGradient = LinearGradient(
+        stops: [
+            .init(color: Color.black.opacity(0.65), location: 0.0),
+            .init(color: Color.black.opacity(0.45), location: 0.5),
+            .init(color: Color.black.opacity(0.0),  location: 1.0),
+        ],
+        startPoint: .top,
+        endPoint: .bottom,
+    )
 
-    private static var bottomScrim: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Color.black.opacity(0.0),  location: 0.0),
-                .init(color: Color.black.opacity(0.45), location: 0.5),
-                .init(color: Color.black.opacity(0.65), location: 1.0),
-            ],
-            startPoint: .top,
-            endPoint: .bottom,
-        )
-        .frame(height: scrimHeight)
-        .ignoresSafeArea(edges: .bottom)
-        .allowsHitTesting(false)
-    }
+    private static let bottomGradient = LinearGradient(
+        stops: [
+            .init(color: Color.black.opacity(0.0),  location: 0.0),
+            .init(color: Color.black.opacity(0.45), location: 0.5),
+            .init(color: Color.black.opacity(0.65), location: 1.0),
+        ],
+        startPoint: .top,
+        endPoint: .bottom,
+    )
 }
 
 /// Thin wrapper that reads `playback.progress` so the Observation tracking

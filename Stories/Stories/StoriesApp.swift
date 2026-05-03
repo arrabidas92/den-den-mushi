@@ -17,6 +17,11 @@ struct StoriesApp: App {
 
     @State private var listViewModel: StoryListViewModel?
     @State private var bootstrapError: StoryError?
+    /// One monitor per app instance. Injected through Environment so any
+    /// view can react to connectivity changes without plumbing a parameter
+    /// through every layer. Currently consumed by `StoryViewerPage` for
+    /// auto-retry on network return.
+    @State private var networkMonitor = NetworkMonitor()
 
     init() {
         ImageLoader.configure()
@@ -34,6 +39,7 @@ struct StoriesApp: App {
                 }
             }
             .preferredColorScheme(.dark)
+            .environment(networkMonitor)
             .task {
                 guard listViewModel == nil, bootstrapError == nil else { return }
                 await bootstrap()

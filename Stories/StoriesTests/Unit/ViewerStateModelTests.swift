@@ -136,35 +136,159 @@ struct ViewerStateModelTests {
 
     // MARK: - Seen marking (immediate on item start)
 
-    @Test("opening a story marks the first item seen immediately")
-    func seenOnAppear() async {
+    @Test("a story whose image renders is marked seen immediately")
+    func seenOnImageReady() async {
         let users = Self.makeUsers([2])
         let (model, store, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         for _ in 0..<8 { await Task.yield() }
         let seen = await store.isSeen("u0-0")
         #expect(seen)
     }
 
-    @Test("opening a story exposes the seen item via sessionSeenItemIDs synchronously")
+    @Test("ready signal exposes the seen item via sessionSeenItemIDs synchronously")
     func sessionSeenSynchronous() async {
         let users = Self.makeUsers([2])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         // Synchronous: no actor hop required to see the in-session set.
         #expect(model.sessionSeenItemIDs.contains("u0-0"))
     }
 
-    @Test("nextItem marks the new item seen, not just the previous one")
+    @Test("nextItem marks the new item seen once its image is ready, not just the previous one")
     func nextItemMarksNewItem() async {
         let users = Self.makeUsers([3])
         let (model, store, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         model.nextItem()
+        model.markCurrentItemReady()
         for _ in 0..<8 { await Task.yield() }
         #expect(await store.isSeen("u0-0"))
         #expect(await store.isSeen("u0-1"))
         #expect(model.sessionSeenItemIDs.contains("u0-1"))
+    }
+
+    // MARK: - Offline / image-load gating
+    //
+    // Bug: in airplane mode the playback timer used to start on `onAppear`,
+    // and `onItemDidStart` synchronously inserted the item into the seen
+    // set + persisted it. The story ring would flip to "fully seen" without
+    // the user ever seeing pixels. The gating contract: nothing happens
+    // until the View signals `markCurrentItemReady()` (i.e. the LazyImage
+    // resolved with `.success`).
+
+    @Test("without ready signal, no item is marked seen")
+    func offlineDoesNotMarkSeen() async {
+        let users = Self.makeUsers([3])
+        let (model, store, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        for _ in 0..<8 { await Task.yield() }
+        #expect(model.sessionSeenItemIDs.isEmpty)
+        #expect(await store.isSeen("u0-0") == false)
+    }
+
+    @Test("without ready signal, the playback timer does not advance")
+    func offlineTimerDoesNotTick() async {
+        let users = Self.makeUsers([2])
+        let (model, _, clock) = Self.makeModel(users: users)
+        await model.onAppear()
+        // Plenty of time for a 5s item — but the timer was never armed.
+        await clock.advance(by: .milliseconds(10_000))
+        #expect(model.playback.progress == 0)
+        #expect(model.currentItemIndex == 0)
+        #expect(model.shouldDismiss == false)
+    }
+
+    @Test("ready signal is idempotent per item")
+    func readySignalIdempotent() async {
+        let users = Self.makeUsers([1])
+        let (model, _, clock) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemReady()
+        await clock.advance(by: .milliseconds(200))
+        let snapshot = model.playback.progress
+        // A second ready call (e.g. NukeUI re-firing onCompletion on a
+        // refresh) must not restart the timer — that would reset progress
+        // to 0 and re-mark the item seen.
+        model.markCurrentItemReady()
+        await clock.advance(by: .milliseconds(100))
+        #expect(model.playback.progress > snapshot)
+    }
+
+    @Test("a new item armed for ready resets the per-item latch")
+    func readyLatchResetsAcrossItems() async {
+        let users = Self.makeUsers([2])
+        let (model, store, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemReady()
+        model.nextItem()
+        // Without firing ready for u0-1, it must stay unseen even though
+        // u0-0 was successfully marked.
+        for _ in 0..<8 { await Task.yield() }
+        #expect(await store.isSeen("u0-0"))
+        #expect(await store.isSeen("u0-1") == false)
+    }
+
+    // MARK: - Image-load failure
+
+    @Test("markCurrentItemFailed flips isCurrentItemFailed and pauses playback")
+    func failureFlipsFlagAndPauses() async {
+        let users = Self.makeUsers([2])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemReady()
+        #expect(model.playback.isPaused == false)
+        model.markCurrentItemFailed()
+        #expect(model.isCurrentItemFailed == true)
+        #expect(model.playback.isPaused == true)
+    }
+
+    @Test("retryCurrentItem keeps isCurrentItemFailed true — footer must not flash visible during refetch")
+    func retryKeepsFailureUntilConfirmedRender() async {
+        let users = Self.makeUsers([1])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemFailed()
+        #expect(model.isCurrentItemFailed == true)
+        model.retryCurrentItem()
+        // Stays true: clearing on Retry would let the footer flash on screen,
+        // then disappear again if the refetch refails.
+        #expect(model.isCurrentItemFailed == true)
+    }
+
+    @Test("a successful render after a failure clears isCurrentItemFailed")
+    func successAfterFailureClearsFlag() async {
+        let users = Self.makeUsers([1])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemFailed()
+        model.retryCurrentItem()
+        model.markCurrentItemReady()
+        #expect(model.isCurrentItemFailed == false)
+    }
+
+    @Test("navigating to a new item resets isCurrentItemFailed")
+    func failureResetsOnNextItem() async {
+        let users = Self.makeUsers([2])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemFailed()
+        #expect(model.isCurrentItemFailed == true)
+        model.nextItem()
+        #expect(model.isCurrentItemFailed == false)
+    }
+
+    @Test("navigating to a new user resets isCurrentItemFailed")
+    func failureResetsOnNextUser() async {
+        let users = Self.makeUsers([2, 2])
+        let (model, _, _) = Self.makeModel(users: users)
+        await model.onAppear()
+        model.markCurrentItemFailed()
+        model.nextUser()
+        #expect(model.isCurrentItemFailed == false)
     }
 
     // MARK: - Like
@@ -205,6 +329,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         #expect(model.playback.isPaused == false)
         model.beginImmersive()
         #expect(model.isImmersive == true)
@@ -248,6 +373,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         #expect(model.playback.isPaused == false)
         model.updateDrag(translationY: 10, containerHeight: 800)
         #expect(model.playback.isPaused == true)
@@ -259,6 +385,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         model.updateDrag(translationY: 50, containerHeight: 800)
         #expect(model.playback.isPaused == true)
         model.endDrag(translationY: 50, velocityY: 0, containerHeight: 800)
@@ -273,6 +400,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         model.updateDrag(translationY: 400, containerHeight: 800)
         model.endDrag(translationY: 400, velocityY: 0, containerHeight: 800)
         #expect(model.shouldDismiss == true)
@@ -283,6 +411,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         model.updateDrag(translationY: -100, containerHeight: 800)
         #expect(abs(model.dragOffset - (-30)) < 0.001)
         // dragProgress is clamped to 0...1 for downward — upward stays at 0.
@@ -296,6 +425,7 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([2])
         let (model, _, clock) = Self.makeModel(users: users)
         await model.onAppear()
+        model.markCurrentItemReady()
         // 5s item, 100ms tick → reaching 1.0 needs 5s.
         await clock.advance(by: .milliseconds(5100))
         #expect(model.currentItemIndex == 1)

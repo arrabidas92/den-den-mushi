@@ -47,6 +47,20 @@ final class ViewerStateModel: Identifiable {
     /// dismiss without racing the debounced disk write.
     private(set) var sessionSeenItemIDs: Set<String> = []
 
+    /// Item ID for which `markCurrentItemReady()` has already fired. Lets
+    /// the View notify "image rendered" without us re-starting playback or
+    /// re-marking seen on a re-entrant render (NukeUI completion can fire
+    /// more than once per page lifetime — cache hit + later refresh).
+    /// Reset on every navigation transition.
+    private var readyItemID: String?
+
+    /// True when the current item's image failed to load. The View hides
+    /// the like footer in that case — Instagram's pattern: an item the
+    /// reader has not actually seen cannot be acted on. Reset on every
+    /// navigation transition (`restartForNewItem` / `restartForNewUser`)
+    /// and on `retryLoad` via `clearCurrentItemFailure`.
+    private(set) var isCurrentItemFailed = false
+
     // MARK: - Transient gesture state
 
     private(set) var isImmersive = false
@@ -89,22 +103,81 @@ final class ViewerStateModel: Identifiable {
 
     // MARK: - Lifecycle
 
-    /// Called by the View on appear. Resets playback for the start item,
-    /// preloads the like-set for the current user, marks the current item
-    /// as seen, and prefetches the next image.
+    /// Called by the View on appear. Preloads the like-set for the current
+    /// user and prefetches the next image, but does **not** start playback
+    /// or mark the current item seen — both wait for `markCurrentItemReady()`,
+    /// which the View calls when the image actually renders. Offline / failed
+    /// loads therefore never tick the timer and never flip the seen ring.
     func onAppear() async {
         await reloadLikedSetForCurrentUser()
-        playback.start()
-        onItemDidStart()
         prefetchNext()
     }
 
-    /// Marks the current item as seen the moment it becomes current.
-    /// Called from `onAppear` and from every navigation transition.
+    /// Called by the View when *any* page's image has finished rendering.
+    /// The model arms playback only if the rendered item is the current
+    /// one — adjacent pages signalling completion for their preview frame
+    /// must not start the active item's timer.
+    ///
+    /// Why not gate this in the View via an `isActive` capture: NukeUI's
+    /// `LazyImageView` retains the `onCompletion` closure from its first
+    /// `onAppear`, and SwiftUI doesn't propagate updated closures to it
+    /// across body re-evaluations. A page that was rendered as passive on
+    /// first mount keeps the `isActive = false` capture forever, so its
+    /// `markCurrentItemReady` calls would silently no-op even after the
+    /// reader swipes to it. Routing the decision through the model with
+    /// the item ID makes it work regardless of capture state.
+    ///
+    /// Idempotent per item — a second call for the same item is a no-op,
+    /// so a re-entrant NukeUI completion (cache hit + later refresh) does
+    /// not restart the 5s timer mid-watch.
+    func markItemReady(itemID: String) {
+        guard itemID == currentItem.id else { return }
+        guard readyItemID != itemID else { return }
+        readyItemID = itemID
+        // A successful render also clears any prior failure flag — Retry
+        // path leaves `isCurrentItemFailed` true on purpose so the footer
+        // doesn't flash visible during the refetch; success here is what
+        // brings it back.
+        isCurrentItemFailed = false
+        playback.start()
+        onItemDidStart()
+    }
+
+    /// Backwards-compatible shim for tests that still use the old API.
+    /// Delegates to `markItemReady(itemID:)` with the current item.
+    func markCurrentItemReady() {
+        markItemReady(itemID: currentItem.id)
+    }
+
+    /// Marks the current item as seen the moment its image is ready.
+    /// Called from `markCurrentItemReady`. Kept as a separate seam so the
+    /// in-session set is updated synchronously before the actor hop.
     func onItemDidStart() {
         let item = currentItem
         sessionSeenItemIDs.insert(item.id)
         Task { [stateStore] in await stateStore.markSeen(itemID: item.id) }
+    }
+
+    /// Called by the View when the current item's image failed to load.
+    /// Hides the like footer (the reader hasn't actually seen the item) and
+    /// pauses playback. Idempotent.
+    func markCurrentItemFailed() {
+        isCurrentItemFailed = true
+        playback.pause()
+    }
+
+    /// Called by the View on Retry, before attempting to refetch the image.
+    /// Resets the per-item ready latch and playback progress so a successful
+    /// retry re-arms the 5s timer from 0.
+    ///
+    /// Crucially does **not** clear `isCurrentItemFailed` — if we did, the
+    /// footer would briefly come back, then disappear again the moment the
+    /// retry refails. The footer stays hidden until `markCurrentItemReady`
+    /// confirms a successful render (the only honest "we have pixels"
+    /// signal).
+    func retryCurrentItem() {
+        readyItemID = nil
+        playback.reset()
     }
 
     // MARK: - Convenience accessors
@@ -139,9 +212,11 @@ final class ViewerStateModel: Identifiable {
             currentItemIndex = max(0, users[currentUserIndex].items.count - 1)
             restartForNewUser()
         } else {
-            // Already at the very first item — just rewind playback.
-            playback.start()
-            onItemDidStart()
+            // Already at the very first item — rewind the bar without
+            // re-arming the seen marker. If the image had loaded, the
+            // tick task is still running; resetting progress is enough.
+            // If it hadn't (offline / failure), there is nothing to start.
+            playback.reset()
         }
     }
 
@@ -164,9 +239,11 @@ final class ViewerStateModel: Identifiable {
             currentItemIndex = 0
             restartForNewUser()
         } else {
+            // Boundary case mirrors `previousItem` at the very first item:
+            // rewind the bar; do not re-mark seen and do not re-arm the
+            // ready latch (the current image is already on screen).
             currentItemIndex = 0
-            playback.start()
-            onItemDidStart()
+            playback.reset()
         }
     }
 
@@ -187,9 +264,17 @@ final class ViewerStateModel: Identifiable {
     /// Same-user item change. The like-set for this user is already
     /// in memory, so `isLiked` resolves synchronously — no actor hop, no
     /// stale-then-correct flicker on the chrome heart.
+    ///
+    /// Playback is **stopped**, not restarted: the new item's timer only
+    /// starts when its image finishes rendering (`markCurrentItemReady`).
+    /// Stopping cancels the previous item's tick loop and resets progress
+    /// to 0 so the bar shows "this item hasn't started" rather than the
+    /// previous item's residual fill while the next image fetches.
     private func restartForNewItem() {
-        playback.start()
-        onItemDidStart()
+        readyItemID = nil
+        isCurrentItemFailed = false
+        playback.stop()
+        playback.reset()
         prefetchNext()
     }
 
@@ -199,10 +284,14 @@ final class ViewerStateModel: Identifiable {
     /// user's set — which is empty for the new user's items, so the heart
     /// reads as not-liked rather than incorrectly inheriting the previous
     /// user's state.
+    ///
+    /// Same playback gating as `restartForNewItem` — see its comment.
     private func restartForNewUser() {
         likedItemIDsForCurrentUser.removeAll(keepingCapacity: true)
-        playback.start()
-        onItemDidStart()
+        readyItemID = nil
+        isCurrentItemFailed = false
+        playback.stop()
+        playback.reset()
         prefetchNext()
         Task { await reloadLikedSetForCurrentUser() }
     }

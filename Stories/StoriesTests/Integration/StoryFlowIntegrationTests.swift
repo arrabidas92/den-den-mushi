@@ -54,9 +54,11 @@ struct StoryFlowIntegrationTests {
 
         // 2. Open user at index 3 — `onAppear` is what the View calls
         //    in production; we invoke it directly because no View hosts
-        //    this viewer in an integration test. The new "seen-on-current"
-        //    rule fires from inside `onAppear`, so calling it is what
-        //    marks `u3-0` seen.
+        //    this viewer in an integration test. Seen marking now waits
+        //    on a `markCurrentItemReady()` signal from the View (fired
+        //    when LazyImage resolves successfully) — without it, an
+        //    offline open must not mark anything seen. We simulate the
+        //    image-loaded path here.
         let openedStory = list.pages[3]
         guard let viewer = await list.makeViewerState(startingAt: openedStory) else {
             Issue.record("makeViewerState should resolve the index for a known story")
@@ -65,13 +67,16 @@ struct StoryFlowIntegrationTests {
         #expect(viewer.currentUserIndex == 3)
         #expect(viewer.currentItemIndex == 0)
         await viewer.onAppear()
+        viewer.markCurrentItemReady()
 
-        // 3. Advance to item 1 — marks u3-1 seen. Stop there so item 2
-        //    remains unseen for the partial-ring assertion below.
+        // 3. Advance to item 1 — marks u3-1 seen once *its* image
+        //    renders. Stop there so item 2 remains unseen for the
+        //    partial-ring assertion below.
         viewer.nextItem()
+        viewer.markCurrentItemReady()
         #expect(viewer.currentItemIndex == 1)
         // Allow the detached `Task { await stateStore.markSeen(...) }`
-        // dispatched on item start to reach the actor.
+        // dispatched on item ready to reach the actor.
         for _ in 0..<8 { await Task.yield() }
 
         // 4. Dismiss without advancing further.

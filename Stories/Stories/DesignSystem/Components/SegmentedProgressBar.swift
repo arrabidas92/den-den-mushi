@@ -35,13 +35,26 @@ struct SegmentedProgressBar: View {
 
     @ViewBuilder
     private func segment(at index: Int, width: CGFloat) -> some View {
+        let fillWidth = width * CGFloat(filled(at: index))
         ZStack(alignment: .leading) {
             Capsule(style: .continuous)
                 .fill(Color.progressInactive)
                 .frame(width: width, height: Self.segmentHeight)
             Capsule(style: .continuous)
                 .fill(Color.progressActive)
-                .frame(width: width * CGFloat(filled(at: index)), height: Self.segmentHeight)
+                .frame(width: fillWidth, height: Self.segmentHeight)
+                // Hard opt-out from any ambient parent animation. The fill
+                // width is driven by `progress` (50ms ticks, must update
+                // instantaneously per tick) and by the discrete reset at
+                // item-change (fillWidth jumps from `width` to 0 when the
+                // active segment moves on). Without this opt-out, a parent
+                // transaction in flight (drag snap-back, like-button spring,
+                // or a body-level `withAnimation` that batched the
+                // `currentIndex` change with the `progress` reset) animates
+                // the fill from full → empty over the parent's duration,
+                // visible as the just-completed segment "rewinding" before
+                // the next one starts filling.
+                .animation(nil, value: fillWidth)
         }
         .frame(width: width, alignment: .leading)
     }
