@@ -1,12 +1,8 @@
 import SwiftUI
 
-/// Top-level alias so call-sites can write `StoryRingState.unseen` rather
-/// than `StoryRing.RingState.unseen` — matches the design-spec API shape.
 typealias StoryRingState = StoryRing.RingState
 
-/// Pure ring renderer — knows nothing about avatars, images, or users.
-/// `StoryAvatar` composes this with the inner content; `StoryTrayItem`
-/// composes that with the username.
+/// Pure ring renderer — composed by `StoryAvatar` and `StoryTrayItem`.
 struct StoryRing: View {
 
     enum RingState: Sendable, Equatable {
@@ -21,7 +17,6 @@ struct StoryRing: View {
     @SwiftUI.State private var shimmerPhase: CGFloat = -1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// 3pt gap between ring stroke and inner content.
     static let ringGap: CGFloat = 3
 
     var body: some View {
@@ -32,10 +27,6 @@ struct StoryRing: View {
             .onChange(of: state) { _, _ in startShimmerIfLoading() }
     }
 
-    /// Resolved as `AnyShapeStyle` so the loading branch can hand back a
-    /// gradient while the static branches return a flat colour. SwiftUI's
-    /// `strokeBorder` accepts any `ShapeStyle`, so the type erasure is the
-    /// only friction.
     private var strokeStyle: AnyShapeStyle {
         switch state {
         case .unseen:
@@ -47,10 +38,6 @@ struct StoryRing: View {
         }
     }
 
-    /// Angular gradient with a bright highlight that sweeps around the
-    /// ring. `shimmerPhase` rotates the gradient via the start-angle so
-    /// the highlight orbits the circle rather than fading uniformly —
-    /// reads as motion, not a pulse.
     private var shimmerGradient: AngularGradient {
         AngularGradient(
             gradient: Gradient(stops: [

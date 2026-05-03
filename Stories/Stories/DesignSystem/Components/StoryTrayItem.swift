@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// Tray cell — avatar + label + tap target. Three states share identical
-/// outer geometry (avatar 64pt, label height) so switching state never
-/// reflows neighbours. Density only affects the *parent* HStack spacing
-/// (in `StoryListView`); we accept it here purely for prop colocation.
+/// Tray cell — avatar + label + tap target. The three states share outer
+/// geometry so switching state never reflows neighbours.
 struct StoryTrayItem: View {
 
     enum State: Sendable {
@@ -19,17 +17,9 @@ struct StoryTrayItem: View {
     static let avatarSize: CGFloat = 64
     static let skeletonLabelWidth: CGFloat = 32
     static let skeletonLabelHeight: CGFloat = 8
-    /// Char cap matches Instagram's tray treatment: long handles are cut
-    /// flush rather than ending in an ellipsis. SwiftUI's `.tail` truncation
-    /// always renders `…`, which reads as a visual artefact at 12pt —
-    /// Instagram cuts mid-glyph instead. The cap is calibrated so the
-    /// trimmed text always fits the layout width below, making the frame's
-    /// own truncation a no-op.
+    // Cut flush instead of trailing `…` — Instagram parity at 12pt where the
+    // ellipsis reads as a visual artefact.
     static let labelCharCap: Int = 10
-    /// Sized so 10 chars of `usernameTray` (12pt medium) fit without the
-    /// frame itself triggering tail truncation. Slightly wider than the
-    /// avatar (64pt) on purpose — Instagram lets the label overflow the
-    /// avatar a touch.
     static let labelMaxWidth: CGFloat = 80
 
     var body: some View {

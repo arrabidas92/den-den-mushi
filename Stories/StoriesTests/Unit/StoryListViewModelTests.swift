@@ -47,7 +47,6 @@ struct StoryListViewModelTests {
     @Test("returns false when content fits the container (no scroll)")
     func shouldLoadMoreNoScroll() {
         let (vm, _, _) = Self.makeVM(pages: [Self.makeStories(5)])
-        // Even before any pages load, contentSize <= containerSize → false.
         #expect(vm.shouldLoadMore(contentOffset: 0, contentSize: 100, containerSize: 200) == false)
     }
 
@@ -61,8 +60,7 @@ struct StoryListViewModelTests {
     func shouldLoadMoreAtStart() async {
         let (vm, _, _) = Self.makeVM(pages: [Self.makeStories(10)])
         await vm.loadInitial()
-        // 10 items, contentSize 1000 → itemExtent = 100. distanceToEnd at
-        // offset 0 is 1000 - 300 = 700; trigger threshold is 3 * 100 = 300.
+        // 10 items, contentSize 1000 → itemExtent = 100; threshold = 3 * 100 = 300.
         #expect(vm.shouldLoadMore(contentOffset: 0, contentSize: 1000, containerSize: 300) == false)
     }
 
@@ -70,7 +68,6 @@ struct StoryListViewModelTests {
     func shouldLoadMoreNearEnd() async {
         let (vm, _, _) = Self.makeVM(pages: [Self.makeStories(10)])
         await vm.loadInitial()
-        // distanceToEnd = 1000 - (599 + 300) = 101 < 300 → true.
         #expect(vm.shouldLoadMore(contentOffset: 599, contentSize: 1000, containerSize: 300) == true)
     }
 
@@ -78,7 +75,7 @@ struct StoryListViewModelTests {
     func shouldLoadMoreAtBoundary() async {
         let (vm, _, _) = Self.makeVM(pages: [Self.makeStories(10)])
         await vm.loadInitial()
-        // distanceToEnd = 300 == itemExtent * triggerOffset → strict less-than → false.
+        // strict less-than on the threshold
         #expect(vm.shouldLoadMore(contentOffset: 400, contentSize: 1000, containerSize: 300) == false)
     }
 
@@ -120,7 +117,6 @@ struct StoryListViewModelTests {
         #expect(vm.isLoading == false)
         #expect(vm.loadingError != nil)
 
-        // Recover and retry.
         await repo.clearError(forPage: 0)
         await vm.loadInitial()
         #expect(vm.pages.count == 4)
@@ -132,8 +128,8 @@ struct StoryListViewModelTests {
     @Test("loadMoreIfNeeded appends the next page")
     func loadMoreAppends() async {
         let p0 = Self.makeStories(3)
-        // Suffix p1 with global indices that follow p0 (3, 4, 5) so cross-page
-        // IDs stay disjoint — the same contract `LocalStoryRepository` enforces.
+        // Suffix p1 with global indices following p0 so cross-page IDs stay
+        // disjoint — same contract `LocalStoryRepository` enforces.
         let p1 = Self.makeStories(3).enumerated().map { offset, story in
             story.withGlobalIndex(3 + offset)
         }
@@ -141,7 +137,6 @@ struct StoryListViewModelTests {
         await vm.loadInitial()
         await vm.loadMoreIfNeeded()
         #expect(vm.pages.count == 6)
-        // Every p1 cell carries a -g{n} suffix.
         #expect(vm.pages.last?.id.contains("-g") == true)
     }
 
@@ -160,7 +155,6 @@ struct StoryListViewModelTests {
         _ = await (a, b)
 
         let calls = await repo.loadCallCount
-        // Exactly one extra call beyond the initial load.
         #expect(calls - initialCalls == 1)
         #expect(vm.pages.count == 6)
     }
@@ -200,7 +194,6 @@ struct StoryListViewModelTests {
     func fullySeenAfterLoad() async {
         let stories = Self.makeStories(2)
         let store = InMemoryUserStateStore()
-        // Mark every item of story u0 as seen; leave u1 partial.
         for item in stories[0].items { await store.markSeen(itemID: item.id) }
         await store.markSeen(itemID: stories[1].items[0].id)
 
@@ -220,7 +213,6 @@ struct StoryListViewModelTests {
         await vm.loadInitial()
         #expect(vm.fullySeenStoryIDs == ["u0"])
 
-        // Now mark u1 fully seen and refresh just that story.
         for item in stories[1].items { await store.markSeen(itemID: item.id) }
         await vm.refreshFullySeen(for: stories[1])
         #expect(vm.fullySeenStoryIDs == ["u0", "u1"])
@@ -246,7 +238,6 @@ struct StoryListViewModelTests {
         let stories = Self.makeStories(2)
         let (vm, _, _) = Self.makeVM(pages: [stories])
         await vm.loadInitial()
-        // Only the first item of u0 — not enough to flip the ring.
         vm.applySessionSeen([stories[0].items[0].id])
         #expect(vm.fullySeenStoryIDs.contains("u0") == false)
     }
@@ -255,9 +246,7 @@ struct StoryListViewModelTests {
     func applySessionSeenUnionsWithPersisted() async {
         let stories = Self.makeStories(1)
         let store = InMemoryUserStateStore()
-        // Pre-seed: the first item was already seen in a prior session
-        // (persisted to disk). The viewer this session only marks the
-        // second item — the union should still flip the ring.
+        // First item persisted from a prior session; only second is seen now.
         await store.markSeen(itemID: stories[0].items[0].id)
         let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
         await vm.loadInitial()
@@ -282,7 +271,6 @@ struct StoryListViewModelTests {
     func resumeAtFirstUnseen() async {
         let stories = Self.makeStories(1)
         let store = InMemoryUserStateStore()
-        // Mark only the first item of u0 seen — second is unseen.
         await store.markSeen(itemID: stories[0].items[0].id)
 
         let (vm, _, _) = Self.makeVM(pages: [stories], store: store)

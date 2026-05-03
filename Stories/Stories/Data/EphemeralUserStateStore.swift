@@ -1,8 +1,7 @@
 import Foundation
 
-/// In-memory `UserStateRepository` used as the production fallback when
-/// `PersistedUserStateStore` cannot initialise (filesystem unavailable
-/// during composition). State survives only for the app lifetime.
+/// In-memory `UserStateRepository` — production fallback when
+/// `PersistedUserStateStore` cannot initialise.
 actor EphemeralUserStateStore: UserStateRepository {
 
     private var state: UserState
@@ -33,7 +32,5 @@ actor EphemeralUserStateStore: UserStateRepository {
         state.likedItemIDs.contains(id)
     }
 
-    func flushNow() async {
-        // No persistence layer — in-memory store has nothing to drain.
-    }
+    func flushNow() async {}
 }

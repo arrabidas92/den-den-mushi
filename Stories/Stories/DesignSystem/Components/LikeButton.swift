@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// 28pt heart button. Stroke white when not liked, fill #FF3B30 when liked.
-/// Spring + haptic fire internally on tap; the parent only needs to pass
-/// the boolean state and the action closure.
 struct LikeButton: View {
 
     let isLiked: Bool
@@ -15,14 +12,9 @@ struct LikeButton: View {
     static let touchTarget: CGFloat = 44
 
     var body: some View {
-        // `onTapGesture` rather than `Button(action:)`: the viewer attaches
-        // a `simultaneousGesture(DragGesture(minimumDistance: 10))` at the
-        // root, and SwiftUI's Button has to wait for that drag to either
-        // engage (≥10pt) or release before firing — a measurable ~100ms
-        // delay on the *first* tap of a session that reads as the heart
-        // not responding instantly. `onTapGesture` fires on touch-up
-        // without that arbitration, so the heart flips in the same frame
-        // as the finger lift.
+        // `onTapGesture` rather than `Button`: the viewer's root drag gesture
+        // (minimum 10pt) makes Button wait for the drag to engage or release
+        // before firing — ~100ms delay on the first tap of a session.
         Image(systemName: isLiked ? "heart.fill" : "heart")
             .resizable()
             .renderingMode(.template)

@@ -1,14 +1,7 @@
 import SwiftUI
 
-/// Two transparent zones laid out 1:2 vertically (left third = previous,
-/// right two-thirds = next). The asymmetry mirrors Instagram and reflects
-/// that *forward* is the dominant action — a Fitts-law improvement, not a
-/// stylistic choice (see `design.md` § *Tap zones*).
-///
-/// Single-tap only — fires immediately with no arbitration delay. The
-/// double-tap heart-pop is mounted *above* this view in `StoryViewerPage`
-/// via a `simultaneousGesture`, so a quick double-tap on the right zone
-/// fires the heart pop AND advances by one item (Instagram parity).
+/// Two transparent zones split 1:2 (left third → previous, right two-thirds
+/// → next), Instagram parity (forward is the dominant action — design.md).
 struct ViewerTapZones: View {
 
     let onPrevious: () -> Void
@@ -41,7 +34,6 @@ struct ViewerTapZones: View {
             onPrevious: {},
             onNext: {},
         )
-        // Visualise the split for the preview — not part of the runtime UI.
         HStack(spacing: 0) {
             Color.red.opacity(0.15).frame(maxWidth: .infinity)
             Color.green.opacity(0.15).frame(maxWidth: .infinity)

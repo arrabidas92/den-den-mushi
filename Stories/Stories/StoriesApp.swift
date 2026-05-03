@@ -1,28 +1,17 @@
 import SwiftUI
 import os
 
-/// Composition root. Holds the root `StoryListViewModel` as an optional
-/// `@State`: hydration is `async throws` (the persisted store reads from
-/// `Application Support`), so we cannot construct the ViewModel from
-/// `App.init`. The `.task` on the root View hydrates it; until ready, a
-/// skeleton tray (shimmering rings) stands in, so the bootstrap surface
-/// matches the in-app loading affordance instead of flashing a generic
-/// spinner for ~3 frames.
-///
-/// Fallback chain: if `PersistedUserStateStore` cannot initialise (rare —
-/// filesystem unavailable, bundle resource missing), the bootstrap drops
-/// to `EphemeralUserStateStore` so the app still launches. The persisted
-/// file is never rewritten by the ephemeral fallback; the current session
-/// loses durability, future sessions retry.
+/// Composition root. Hydration is `async throws` (the persisted store
+/// reads from Application Support), so the ViewModel is built in `.task`
+/// rather than `App.init`. If `PersistedUserStateStore` cannot initialise,
+/// the bootstrap falls back to `EphemeralUserStateStore` so the app still
+/// launches — the persisted file is never rewritten by the fallback, so
+/// future sessions retry.
 @main
 struct StoriesApp: App {
 
     @State private var listViewModel: StoryListViewModel?
     @State private var bootstrapError: StoryError?
-    /// One monitor per app instance. Injected through Environment so any
-    /// view can react to connectivity changes without plumbing a parameter
-    /// through every layer. Currently consumed by `StoryViewerPage` for
-    /// auto-retry on network return.
     @State private var networkMonitor = NetworkMonitor()
 
     init() {
@@ -83,9 +72,8 @@ struct StoriesApp: App {
 
     // MARK: - Bootstrap error fallback
 
-    /// Only rendered when the *story* repository fails — i.e. the bundled
-    /// JSON is missing or malformed. The state store has its own fallback
-    /// (`EphemeralUserStateStore`) and never reaches this surface.
+    /// Only rendered when the bundled JSON is missing or malformed — the
+    /// state store has its own ephemeral fallback.
     private func bootstrapErrorView(_ error: StoryError) -> some View {
         ZStack {
             Color.background.ignoresSafeArea()
@@ -118,10 +106,8 @@ struct StoriesApp: App {
 
 // MARK: - Bootstrap skeleton
 
-/// Shown while the persisted store hydrates. Mirrors the tray skeleton
-/// inside `StoryListView` (8 shimmering rings) so the bootstrap surface
-/// is visually continuous with the first loaded frame — no spinner, no
-/// snap. The cells are non-interactive: tapping a placeholder is a no-op.
+/// Mirrors the tray skeleton inside `StoryListView` so the bootstrap
+/// surface is visually continuous with the first loaded frame.
 private struct BootstrapSkeletonView: View {
 
     @Environment(\.trayDensity) private var density

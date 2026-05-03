@@ -1,22 +1,15 @@
 import SwiftUI
 
-/// Top chrome of the viewer: small avatar (no ring), username, relative
-/// timestamp, close button. Pure layout — the close action is injected so
-/// the parent can decide whether it dismisses, pauses, or triggers a
-/// custom transition.
-///
-/// Avatar deliberately omits the ring: inside the viewer the user has
-/// already entered the story, so the seen-state ring is no longer the
-/// signal that matters. Keeping the chrome quiet matches Instagram's
-/// header treatment.
+/// Top chrome of the viewer: avatar, username, relative timestamp, close
+/// button. The avatar deliberately omits the ring — the user has entered
+/// the story, so the seen-state signal no longer matters (Instagram parity).
 struct StoryViewerHeader: View {
 
     let user: User
     let timestamp: Date
     let onClose: () -> Void
 
-    /// Used by tests and previews so the relative formatter stays
-    /// deterministic. Production passes `Date()`.
+    /// Injectable for deterministic previews/tests. Production passes `Date()`.
     var now: Date = Date()
 
     static let height: CGFloat = 56
@@ -35,13 +28,11 @@ struct StoryViewerHeader: View {
                     .truncationMode(.tail)
                 Text(Self.relativeTimestamp(from: timestamp, now: now))
                     .font(.timestamp)
-                    // Dimmed white instead of `Color.textSecondary` (#A0A0A0):
-                    // the secondary token assumes a dark surface behind it.
-                    // In the viewer the header floats over arbitrary imagery,
-                    // and #A0A0A0 falls below the WCAG contrast floor against
-                    // a bright sky even with the scrim. White at 75% renders
-                    // close to the same perceptual weight on the OLED canvas
-                    // but holds contrast on highlights.
+                    // Dimmed white rather than `Color.textSecondary`
+                    // (#A0A0A0): the latter assumes a dark surface, but here
+                    // the header floats over arbitrary imagery and falls
+                    // below WCAG contrast against bright skies even with the
+                    // scrim.
                     .foregroundStyle(Color.textPrimary.opacity(0.75))
                     .lineLimit(1)
             }
@@ -50,10 +41,8 @@ struct StoryViewerHeader: View {
         }
         .padding(.leading, Spacing.l)
         // Align the close icon's visible right edge with the like button's
-        // visible right edge in the footer. Both buttons use a 44pt touch
-        // target with a smaller icon centered inside; the larger the icon,
-        // the smaller the invisible margin. We compensate so both icons
-        // sit the same distance from the screen edge.
+        // — both use a 44pt touch target with smaller icons centred, so we
+        // compensate for the difference in invisible margin.
         .padding(.trailing, Spacing.l + (LikeButton.touchTarget - LikeButton.iconSize) / 2 - (Self.closeTouchTarget - Self.closeIconSize) / 2)
         .frame(height: Self.height)
     }
@@ -90,9 +79,8 @@ struct StoryViewerHeader: View {
         return String(trimmed.prefix(2)).uppercased()
     }
 
-    /// Compact relative formatter: "now", "12m", "3h", "2d", "5w". The
-    /// system `RelativeDateTimeFormatter` is too verbose ("2 days ago")
-    /// for a 13pt timestamp slot — this matches Instagram's compact form.
+    /// Compact form ("now", "12m", "3h", "2d", "5w") — `RelativeDateTimeFormatter`
+    /// is too verbose for a 13pt timestamp slot.
     static func relativeTimestamp(from date: Date, now: Date) -> String {
         let elapsed = max(0, now.timeIntervalSince(date))
         switch elapsed {

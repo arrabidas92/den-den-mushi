@@ -1,12 +1,9 @@
 import Foundation
 
-/// Loads `stories.json` from the bundle once at init, then serves
-/// paginated views over the cached `baseStories` array. Pagination
-/// recycles the local list (mod `n`) and rewrites IDs with a `-g{n}`
-/// suffix where `n` is the cell's global position in the paginated
-/// sequence — so every cell has a unique ID even when the JSON has
-/// fewer users than the page size (otherwise the same base story would
-/// recur within a single page and collide on `Identifiable`).
+/// Loads `stories.json` once and serves paginated views over the cached
+/// `baseStories`. Pagination recycles the list (mod `n`) and rewrites IDs
+/// with `-g{n}` suffixes so each cell has a unique ID even when the JSON
+/// has fewer users than the page size.
 actor LocalStoryRepository: StoryRepository {
 
     private let baseStories: [Story]
@@ -31,7 +28,6 @@ actor LocalStoryRepository: StoryRepository {
         self.pageSize = pageSize
     }
 
-    /// Convenience init for tests and fakes that want to bypass JSON entirely.
     init(stories: [Story], pageSize: Int = 10) {
         self.baseStories = stories
         self.pageSize = pageSize

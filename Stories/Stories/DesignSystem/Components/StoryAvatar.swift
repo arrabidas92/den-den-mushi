@@ -2,17 +2,9 @@ import SwiftUI
 import Nuke
 import NukeUI
 
-/// Avatar image with a ring around it. Three internal phases:
-/// - **Loading**: pulsing ring + Surface elevated inner.
-/// - **Loaded**: image fills the inner circle.
-/// - **Failed**: initials glyph on Surface elevated, no haptic, no log spam.
-///
-/// `ring` is provided by the consumer because the seen/unseen decision lives
-/// in the ViewModel — the avatar component itself is dumb. The one piece
-/// of behaviour it owns is auto-retry on network return: when the monitor
-/// flips back online and our last load failed, we purge Nuke's cached
-/// failure and force a refetch — same pattern as `StoryViewerPage`, scaled
-/// down because the avatar has no chrome to flicker.
+/// Avatar image with a ring around it (loading / loaded / failed). The
+/// `ring` decision is owned by the ViewModel; this component handles only
+/// the image fetch and an auto-retry when the network comes back.
 struct StoryAvatar: View {
 
     let url: URL?
@@ -20,14 +12,8 @@ struct StoryAvatar: View {
     let ring: StoryRing.RingState
     let size: CGFloat
 
-    /// Optional because previews and tests can render the avatar without
-    /// providing a monitor. Gated on its presence — without it the avatar
-    /// behaves exactly as before (initials fallback, no auto-retry).
     @Environment(NetworkMonitor.self) private var networkMonitor: NetworkMonitor?
     @State private var loadFailed = false
-    /// Bumped on each retry to vary the NukeUI request identity so the
-    /// fetch is reissued even though the URL is unchanged. Mirrors the
-    /// `retryGeneration` mechanism in `StoryViewerPage`.
     @State private var retryGeneration = 0
 
     init(url: URL?, initials: String, ring: StoryRing.RingState, size: CGFloat = 64) {
@@ -38,7 +24,7 @@ struct StoryAvatar: View {
     }
 
     var body: some View {
-        let innerDiameter = size - 2 * (StoryRing.ringGap + 2) // ring stroke ~2pt + gap
+        let innerDiameter = size - 2 * (StoryRing.ringGap + 2)
         ZStack {
             inner
                 .frame(width: innerDiameter, height: innerDiameter)
@@ -68,11 +54,8 @@ struct StoryAvatar: View {
                         Color.surfaceElevated
                     }
                 }
-                // Outcome tracking lives in the content closure for the
-                // same reason as `StoryViewerPage`: NukeUI's `onCompletion`
-                // captures stale state across body re-evaluations, while
-                // the content closure is re-invoked with the live
-                // `LazyImageState` on every pass.
+                // Same rationale as `StoryViewerPage`: NukeUI's
+                // `onCompletion` captures stale state across body re-evals.
                 .task(id: outcome(for: imageState)) {
                     switch outcome(for: imageState) {
                     case .loaded: loadFailed = false
@@ -94,9 +77,6 @@ struct StoryAvatar: View {
         return .loading
     }
 
-    /// Builds the request — vanilla on first load, cache-busting on retry.
-    /// Matches `StoryViewerPage.imageRequest()` so behaviour is consistent
-    /// across the two places we drive Nuke directly.
     private func avatarRequest(for url: URL) -> ImageRequest {
         if retryGeneration == 0 {
             return ImageRequest(url: url)

@@ -140,7 +140,6 @@ struct ViewerStateModelTests {
     func nextItemPaginatesBeforeDismiss() async {
         let users = Self.makeUsers([1])
         let extras = Self.makeUsers([2]).map { story -> Story in
-            // Rename the appended user so we can assert we landed on it.
             let newUser = User(
                 id: "extra",
                 stableID: "extra",
@@ -160,7 +159,7 @@ struct ViewerStateModelTests {
             prefetcher: nil,
             loadMoreUsers: { extras },
         )
-        model.nextItem()                          // would dismiss without the hook
+        model.nextItem()
         for _ in 0..<8 { await Task.yield() }
         #expect(model.shouldDismiss == false)
         #expect(model.users.count == 2)
@@ -250,12 +249,9 @@ struct ViewerStateModelTests {
 
     // MARK: - Offline / image-load gating
     //
-    // Bug: in airplane mode the playback timer used to start on `onAppear`,
-    // and `onItemDidStart` synchronously inserted the item into the seen
-    // set + persisted it. The story ring would flip to "fully seen" without
-    // the user ever seeing pixels. The gating contract: nothing happens
-    // until the View signals `markCurrentItemReady()` (i.e. the LazyImage
-    // resolved with `.success`).
+    // Contract: nothing happens until the View signals `markCurrentItemReady()`.
+    // Without it the timer used to fire seen marking from `onAppear`, flipping
+    // the ring to "fully seen" with zero pixels shown.
 
     @Test("without ready signal, no item is marked seen")
     func offlineDoesNotMarkSeen() async {
@@ -272,7 +268,6 @@ struct ViewerStateModelTests {
         let users = Self.makeUsers([2])
         let (model, _, clock) = Self.makeModel(users: users)
         await model.onAppear()
-        // Plenty of time for a 5s item — but the timer was never armed.
         await clock.advance(by: .milliseconds(10_000))
         #expect(model.playback.progress == 0)
         #expect(model.currentItemIndex == 0)
@@ -287,9 +282,7 @@ struct ViewerStateModelTests {
         model.markCurrentItemReady()
         await clock.advance(by: .milliseconds(200))
         let snapshot = model.playback.progress
-        // A second ready call (e.g. NukeUI re-firing onCompletion on a
-        // refresh) must not restart the timer — that would reset progress
-        // to 0 and re-mark the item seen.
+        // A second ready call must not restart the timer.
         model.markCurrentItemReady()
         await clock.advance(by: .milliseconds(100))
         #expect(model.playback.progress > snapshot)
@@ -302,8 +295,6 @@ struct ViewerStateModelTests {
         await model.onAppear()
         model.markCurrentItemReady()
         model.nextItem()
-        // Without firing ready for u0-1, it must stay unseen even though
-        // u0-0 was successfully marked.
         for _ in 0..<8 { await Task.yield() }
         #expect(await store.isSeen("u0-0"))
         #expect(await store.isSeen("u0-1") == false)
@@ -331,8 +322,6 @@ struct ViewerStateModelTests {
         model.markCurrentItemFailed()
         #expect(model.isCurrentItemFailed == true)
         model.retryCurrentItem()
-        // Stays true: clearing on Retry would let the footer flash on screen,
-        // then disappear again if the refetch refails.
         #expect(model.isCurrentItemFailed == true)
     }
 
@@ -379,7 +368,6 @@ struct ViewerStateModelTests {
         model.toggleLike()
         // Synchronous flip — no `await` between the call and this assertion.
         #expect(model.isLiked == true)
-        // Persistence eventually catches up.
         for _ in 0..<8 { await Task.yield() }
         let storedLike = await store.isLiked("u0-0")
         #expect(storedLike)
@@ -422,11 +410,8 @@ struct ViewerStateModelTests {
     func commitOnTranslation() {
         let users = Self.makeUsers([1])
         let (model, _, _) = Self.makeModel(users: users)
-        // 240/800 = 0.30 → strict `>` boundary → false.
         #expect(model.shouldCommitDismiss(translationY: 240, velocityY: 0, containerHeight: 800) == false)
-        // 245/800 = 0.30625 → past threshold → true.
         #expect(model.shouldCommitDismiss(translationY: 245, velocityY: 0, containerHeight: 800) == true)
-        // 400/800 = 0.50 → way past threshold → true.
         #expect(model.shouldCommitDismiss(translationY: 400, velocityY: 0, containerHeight: 800) == true)
     }
 
@@ -491,7 +476,6 @@ struct ViewerStateModelTests {
         model.markCurrentItemReady()
         model.updateDrag(translationY: -100, containerHeight: 800)
         #expect(abs(model.dragOffset - (-30)) < 0.001)
-        // dragProgress is clamped to 0...1 for downward — upward stays at 0.
         #expect(model.dragProgress == 0)
     }
 
@@ -503,7 +487,6 @@ struct ViewerStateModelTests {
         let (model, _, clock) = Self.makeModel(users: users)
         await model.onAppear()
         model.markCurrentItemReady()
-        // 5s item, 100ms tick → reaching 1.0 needs 5s.
         await clock.advance(by: .milliseconds(5100))
         #expect(model.currentItemIndex == 1)
     }

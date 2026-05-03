@@ -2,19 +2,9 @@ import Foundation
 import os
 @testable import Stories
 
-/// Minimal hand-rolled `Clock<Duration>` for the test target. Replaces
-/// `swift-clocks` (declined as a dependency in CLAUDE.md).
-///
-/// Usage:
-/// ```swift
-/// let clock = TestClock()
-/// let controller = PlaybackController(clock: clock, itemDuration: .seconds(5))
-/// controller.start()
-/// await clock.advance(by: .seconds(1))   // progress ~= 0.2
-/// ```
-///
-/// State lives behind an actor to satisfy Swift 6 strict concurrency
-/// without locks; the public methods route through it.
+/// Minimal hand-rolled `Clock<Duration>` — replaces `swift-clocks` which
+/// CLAUDE.md declines as a dependency. State lives behind an actor for
+/// Swift 6 strict concurrency.
 final class TestClock: Clock, @unchecked Sendable {
 
     typealias Duration = Swift.Duration
@@ -28,9 +18,7 @@ final class TestClock: Clock, @unchecked Sendable {
 
     var minimumResolution: Duration { .zero }
     var now: Instant {
-        // `Clock.now` is synchronous on the protocol. Cache the latest
-        // offset alongside the actor so reads do not need to await — the
-        // value is updated in lockstep with `advance(by:)`.
+        // `Clock.now` is synchronous, so cache the offset outside the actor.
         Instant(offset: nowOffset.value)
     }
 
@@ -42,30 +30,17 @@ final class TestClock: Clock, @unchecked Sendable {
         try await state.suspendUntil(deadline)
     }
 
-    /// Advances the clock by `duration` and resumes every continuation
-    /// whose deadline is now in the past, in deadline order. After each
-    /// resume we yield repeatedly so the resumed code (which typically
-    /// re-arms another `sleep`) reaches its next suspension point before
-    /// we continue. The yield count is empirically generous — Swift
-    /// Testing parallelism otherwise lets unrelated tasks interleave on
-    /// the main actor and wins races against the runloop draining.
+    /// Advances the clock and resumes every continuation whose deadline is
+    /// now past, in deadline order. We step time fragment-by-fragment to
+    /// the next pending deadline rather than bulk-bumping: a bulk advance
+    /// would let freshly re-armed `clock.sleep`s land past the wall and
+    /// only the first tick would release.
     func advance(by duration: Duration) async {
-        // Drain first: callers typically `start()` a controller and
-        // immediately `advance(...)`, but the controller's tick task
-        // hasn't run yet — its body is queued on the main actor. Yield
-        // so it reaches its first `clock.sleep` and registers a pending
-        // continuation before we move time forward.
+        // Drain so the controller's tick task reaches its first
+        // `clock.sleep` and registers a pending continuation before we
+        // move time.
         await drain()
 
-        // Step time forward in fragments aligned to the next pending
-        // deadline. A bulk `nowOffset.add(duration)` would cause every
-        // freshly re-armed `clock.sleep(for: tickInterval)` (which
-        // anchors its deadline at `now + tickInterval`) to land past
-        // the wall — so a single advance would release only one tick
-        // and the rest would be born "in the future" relative to a
-        // now-already-bumped clock. Walking the timeline preserves the
-        // invariant that `now` ratchets forward in lockstep with each
-        // released waiter.
         let target = nowOffset.value + duration
         while let nextDeadline = await state.nextDeadlineNotAfter(target) {
             nowOffset.set(nextDeadline)
@@ -79,15 +54,10 @@ final class TestClock: Clock, @unchecked Sendable {
         await drain()
     }
 
-    /// Performs enough cooperative yields that any task resumed by
-    /// `advance(by:)` has time to run its body up to its next suspension.
     private func drain() async {
         for _ in 0..<8 { await Task.yield() }
     }
 
-    /// Tiny wrapper so `now` (a synchronous protocol requirement) can
-    /// read the current offset without hopping to the actor. Mutations
-    /// happen only inside `advance(by:)`, which already serialises them.
     final class AtomicDuration: @unchecked Sendable {
         private let lock = OSAllocatedUnfairLock<Duration>(initialState: .zero)
         init(_ initial: Duration) { lock.withLock { $0 = initial } }
@@ -120,9 +90,6 @@ final class TestClock: Clock, @unchecked Sendable {
             }
         }
 
-        /// Removes and returns every continuation whose deadline is
-        /// in the past relative to the *current* `nowOffset`, in deadline
-        /// order. Caller is responsible for resuming them.
         func dueContinuations() -> [CheckedContinuation<Void, Error>] {
             let cutoff = currentOffset
             let due = pending
@@ -132,9 +99,6 @@ final class TestClock: Clock, @unchecked Sendable {
             return due.map(\.cont)
         }
 
-        /// Returns the earliest pending deadline whose offset is `<= cap`,
-        /// or `nil` if no such deadline exists. `advance(by:)` uses this
-        /// to walk the timeline tick-by-tick.
         func nextDeadlineNotAfter(_ cap: Duration) -> Duration? {
             pending.map(\.deadline.offset)
                 .filter { $0 <= cap }

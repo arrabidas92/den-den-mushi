@@ -1,22 +1,12 @@
 import SwiftUI
 
-/// Horizontal stories tray. Owns the layout but no business logic — the
-/// pagination predicate lives on `StoryListViewModel.shouldLoadMore`,
-/// which this View calls from `.onScrollGeometryChange`.
-///
-/// The `@Namespace` is exposed for the future viewer transition
-/// (`.matchedTransitionSource(id:in:)` → `.navigationTransition(.zoom)`);
-/// Phase 6 wires the destination side. We attach the source here now so
-/// every tray cell already advertises a transition anchor.
+/// Horizontal stories tray.
 struct StoryListView: View {
 
     @Bindable var viewModel: StoryListViewModel
     @Environment(\.trayDensity) private var density
     @Namespace private var transitionNamespace
 
-    /// Optional override for tap handling (used by previews to avoid
-    /// presenting a real viewer). Nil in production — the View presents
-    /// `StoryViewerView` via `.fullScreenCover` itself.
     var onSelect: ((Story) -> Void)? = nil
 
     @State private var presentedViewerState: ViewerStateModel?
@@ -51,27 +41,20 @@ struct StoryListView: View {
                         state: state,
                         transitionNamespace: transitionNamespace,
                         onDismiss: { currentStory in
-                            // Fires *before* the cover starts closing —
-                            // apply the in-session seen set synchronously
-                            // so the tray's ring is already in its final
-                            // state on the first frame of the matched
-                            // zoom-out. The cell is already centred (the
-                            // tray follows `state.currentUserIndex` via
-                            // `onCurrentUserChange` below), so the
-                            // zoom-out lands on a live, on-screen cell.
+                            // Fires before the cover closes — apply the
+                            // in-session seen set synchronously so the ring
+                            // is in its final state on the first frame of
+                            // the matched zoom-out.
                             presentedStory = nil
                             viewModel.applySessionSeen(state.sessionSeenItemIDs)
                             Task { await viewModel.refreshFullySeen(for: currentStory) }
                         },
                         onCurrentUserChange: { story in
-                            // The tray is hidden behind the cover, so
-                            // scrolling here is invisible — but it
-                            // guarantees the LazyHStack has the matching
-                            // cell mounted and centred by the time the
-                            // matched-zoom dismiss reads its anchor. A
-                            // cell scrolled off-screen has no
-                            // matchedTransitionSource, which collapses
-                            // the animation onto a stale frame.
+                            // Keeps the matching cell mounted and centred
+                            // by the time the matched-zoom dismiss reads
+                            // its anchor — a cell scrolled off-screen has
+                            // no `matchedTransitionSource` and the
+                            // animation collapses onto a stale frame.
                             proxy.scrollTo(story.id, anchor: .center)
                         },
                     )
@@ -93,11 +76,9 @@ struct StoryListView: View {
             onSelect(story)
             return
         }
-        // Warm the haptic engine on the *opening* tap, not on viewer
-        // appearance. The zoom transition gives us ~0.3s of headroom
-        // before the user can reach the like button — calling prewarm
-        // from `.task` inside the viewer is racy with a fast first tap
-        // and reintroduces the cold-start hang on the first like.
+        // Prewarm on the opening tap, not on viewer appearance — calling
+        // from `.task` inside the viewer is racy with a fast first tap and
+        // reintroduces the cold-start hang on the first like.
         Haptics.prewarm()
         Task {
             guard let state = await viewModel.makeViewerState(startingAt: story) else { return }
@@ -183,8 +164,6 @@ struct StoryListView: View {
         userStateRepository: EphemeralUserStateStore(),
         prefetcher: nil,
     )
-    // The .task hasn't fired yet in the preview canvas; flip the flag
-    // manually so the skeleton row renders without any async work.
     Task { @MainActor in await vm.loadInitial() }
     return StoryListView(viewModel: vm)
         .frame(height: 110)
@@ -192,9 +171,6 @@ struct StoryListView: View {
         .preferredColorScheme(.dark)
 }
 
-/// Preview-only fake. The fully featured fake (`FakeStoryRepository`,
-/// with error injection and call counting) lives in the test target and
-/// is therefore unavailable to app-target previews.
 private actor PreviewStoryRepository: StoryRepository {
 
     private let pages: [[Story]]

@@ -3,46 +3,27 @@ import Observation
 
 /// Drives the horizontal stories tray. Holds the paginated list, the
 /// fully-seen ring state, and the load-more trigger predicate.
-///
-/// MainActor isolation is inherited from the module default (see
-/// `architecture.md` § *Concurrency model*); annotating it here would be
-/// noise. Tests run on the MainActor for the same reason.
 @Observable
 final class StoryListViewModel {
 
     // MARK: - State
 
-    /// Concatenation of every page loaded so far, in order. The View renders
-    /// this directly; pagination appends without ever mutating earlier
-    /// entries (preserves diff identity for the LazyHStack).
     private(set) var pages: [Story] = []
 
-    /// True only during the very first `loadInitial()` call. Drives the
-    /// skeleton tray. Distinct from `isLoadingMore` so the View can show
-    /// different affordances (full skeleton vs. trailing skeleton cell).
     private(set) var isLoading = false
-
-    /// True while a page > 0 is in flight. The `shouldLoadMore` flag set by
-    /// the View must be ignored while this is true to avoid double-loads.
     private(set) var isLoadingMore = false
 
-    /// Last error raised by either `loadInitial` or `loadMoreIfNeeded`.
-    /// The View surfaces this in two distinct affordances:
-    /// - empty pages → full-tray retry (initial failure)
-    /// - non-empty pages → trailing failure cell with a retry button
+    /// Surfaced by the View in two affordances: empty pages → full-tray
+    /// retry, non-empty pages → trailing failure cell.
     private(set) var loadingError: StoryError?
 
-    /// Set of story IDs whose every item is in the seen-set. Recomputed
-    /// after each successful page load. Membership drives the ring's
-    /// seen/unseen rendering inside `StoryTrayItem`.
     private(set) var fullySeenStoryIDs: Set<String> = []
 
-    /// Cached per-item seen state for every loaded story, mirrored from the
-    /// persistent store at load time. The viewer dismiss path unions this
-    /// with the in-session seen-set so a story whose first items were seen
-    /// in a *previous* session and whose last item was seen *this* session
-    /// still flips the ring synchronously, without waiting on the
-    /// debounced disk read.
+    /// Mirrored from the persistent store at load time. The viewer dismiss
+    /// path unions this with the in-session seen-set so a story whose first
+    /// items were seen in a previous session and whose last item was seen
+    /// this session still flips the ring synchronously, without waiting on
+    /// the debounced disk read.
     private(set) var knownSeenItemIDs: Set<String> = []
 
     // MARK: - Configuration
@@ -53,8 +34,6 @@ final class StoryListViewModel {
     let userStateRepository: UserStateRepository
     private let prefetcher: ImagePrefetchHandle?
 
-    /// Tracks the next page index to fetch. Incremented only on success so
-    /// a failed load can be retried by re-firing the same trigger.
     private var nextPageToLoad = 0
 
     // MARK: - Init
@@ -75,9 +54,8 @@ final class StoryListViewModel {
 
     // MARK: - Pagination predicate
 
-    /// Pure: true when the visible viewport is within `triggerOffset`
-    /// items of the end of currently loaded content. Inputs are forwarded
-    /// straight from `ScrollGeometry`; tests hit this without spinning a View.
+    /// Pure: true when the viewport is within `triggerOffset` items of the
+    /// end of currently loaded content. Tests hit this without spinning a View.
     func shouldLoadMore(
         contentOffset: CGFloat,
         contentSize: CGFloat,
@@ -92,8 +70,6 @@ final class StoryListViewModel {
 
     // MARK: - Loading
 
-    /// Loads the first page. Subsequent calls while a load is already in
-    /// flight are ignored — the existing one will complete and update state.
     func loadInitial() async {
         guard !isLoading, pages.isEmpty else { return }
         isLoading = true
@@ -113,10 +89,9 @@ final class StoryListViewModel {
         }
     }
 
-    /// Loads the next page. The `isLoadingMore` flag is set synchronously
-    /// before the first `await`, so two concurrent calls scheduled on the
-    /// MainActor cannot both reach the repository — the second observes
-    /// the flag and bails.
+    /// `isLoadingMore` is set synchronously before the first `await` so two
+    /// concurrent calls scheduled on the MainActor cannot both reach the
+    /// repository.
     func loadMoreIfNeeded() async {
         guard !isLoading, !isLoadingMore else { return }
         guard !pages.isEmpty else { return }
@@ -138,11 +113,6 @@ final class StoryListViewModel {
         }
     }
 
-    /// Re-checks the seen status for the given stories and merges the
-    /// result into `fullySeenStoryIDs`. Called after each successful load
-    /// and exposed for the viewer to refresh the tray on dismiss.
-    /// Also populates `knownSeenItemIDs` per item so `applySessionSeen`
-    /// can flip the ring synchronously without re-querying the store.
     func refreshFullySeen(for stories: [Story]) async {
         var fullySeen: Set<String> = []
         var seenItems: Set<String> = []
@@ -157,33 +127,19 @@ final class StoryListViewModel {
             }
             if allSeen { fullySeen.insert(story.id) }
         }
-        // Merge: keep prior decisions for stories not in this batch,
-        // overwrite for those that are.
         let touched = Set(stories.map(\.id))
         fullySeenStoryIDs = fullySeenStoryIDs.subtracting(touched).union(fullySeen)
-        // For items, drop the previous decisions for the touched stories
-        // and overwrite with the freshly observed seen items.
         let touchedItemIDs = Set(stories.flatMap { $0.items.map(\.id) })
         knownSeenItemIDs = knownSeenItemIDs.subtracting(touchedItemIDs).union(seenItems)
     }
 
-    /// Convenience for callers (e.g. the viewer dismiss path) that hold a
-    /// `Story` reference and want to refresh that single ring without
-    /// passing the whole array.
     func refreshFullySeen(for story: Story) async {
         await refreshFullySeen(for: [story])
     }
 
-    /// Synchronously merges an in-memory set of seen item IDs into the
-    /// fully-seen ring decision. Used by the viewer dismiss path so the
-    /// ring flips from unseen to seen the instant the cover dismisses,
+    /// Synchronously merges in-session seen item IDs into the fully-seen
+    /// ring decision so the ring flips the instant the cover dismisses,
     /// without waiting on the persistence flush race.
-    ///
-    /// The predicate unions the *session* seen-set with the *cached* seen
-    /// items captured at the last `refreshFullySeen` — so a story whose
-    /// first items were seen in a previous session and whose last item
-    /// was seen this session is detected as fully seen here, instead of
-    /// waiting for the async refresh round-trip.
     func applySessionSeen(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
         knownSeenItemIDs.formUnion(ids)
@@ -200,20 +156,8 @@ final class StoryListViewModel {
         }
     }
 
-    /// Builds a viewer state model anchored at the given story. The
-    /// viewer paginates over *all* loaded users so a horizontal swipe
-    /// crosses page boundaries seamlessly.
-    ///
-    /// Resume rule: if some items are unseen, start at the first unseen
-    /// item; if every item is already seen, start at the first item
-    /// (Instagram parity — re-watching from the start, not the last seen).
-    ///
-    /// The viewer is also given a `loadMoreUsers` hook that defers to
-    /// `loadMoreIfNeeded` and returns whatever new users were appended.
-    /// This lets auto-advance cross tray-pagination boundaries instead of
-    /// dismissing when the reader hits the end of the currently loaded
-    /// users — the previous behaviour read as a bug because the dismiss
-    /// fired in the middle of an apparent multi-user session.
+    /// Resume rule: start at the first unseen item; if every item is already
+    /// seen, restart from the first (Instagram parity).
     func makeViewerState(startingAt story: Story) async -> ViewerStateModel? {
         guard let index = pages.firstIndex(where: { $0.id == story.id }) else { return nil }
         let resumeIndex = await firstUnseenIndex(in: story) ?? 0
@@ -229,11 +173,6 @@ final class StoryListViewModel {
         )
     }
 
-    /// Loads the next tray page on behalf of the viewer and returns the
-    /// users that were appended (empty when there are no more pages or
-    /// when the load failed). The viewer uses this to keep playing across
-    /// page boundaries instead of dismissing at the end of the currently
-    /// loaded users.
     private func loadMoreUsersForViewer() async -> [Story] {
         let beforeCount = pages.count
         await loadMoreIfNeeded()
@@ -241,8 +180,6 @@ final class StoryListViewModel {
         return Array(pages[beforeCount..<pages.count])
     }
 
-    /// Returns the index of the first unseen item in `story`, or `nil`
-    /// when every item is already seen.
     private func firstUnseenIndex(in story: Story) async -> Int? {
         for (index, item) in story.items.enumerated() {
             if await userStateRepository.isSeen(item.id) == false {

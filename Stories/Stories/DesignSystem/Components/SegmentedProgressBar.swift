@@ -1,19 +1,15 @@
 import SwiftUI
 
-/// Pure rendering — `progress` is driven externally by `PlaybackController`.
-/// Segments before `currentIndex` render full, after render at 30% opacity,
-/// the active one fills proportionally to `progress`.
+/// `progress` is driven externally by `PlaybackController` (0...1, applied
+/// only to the segment at `currentIndex`).
 struct SegmentedProgressBar: View {
 
     let count: Int
     let currentIndex: Int
-    /// 0...1, only applied to the segment at `currentIndex`.
     let progress: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// 3pt height per the design spec; matches the perceptual minimum
-    /// for "this is a thin progress bar" without crossing into hairline.
     static let segmentHeight: CGFloat = 3
     static let interSegmentGap: CGFloat = 2
 
@@ -43,17 +39,11 @@ struct SegmentedProgressBar: View {
             Capsule(style: .continuous)
                 .fill(Color.progressActive)
                 .frame(width: fillWidth, height: Self.segmentHeight)
-                // Hard opt-out from any ambient parent animation. The fill
-                // width is driven by `progress` (50ms ticks, must update
-                // instantaneously per tick) and by the discrete reset at
-                // item-change (fillWidth jumps from `width` to 0 when the
-                // active segment moves on). Without this opt-out, a parent
-                // transaction in flight (drag snap-back, like-button spring,
-                // or a body-level `withAnimation` that batched the
-                // `currentIndex` change with the `progress` reset) animates
-                // the fill from full → empty over the parent's duration,
-                // visible as the just-completed segment "rewinding" before
-                // the next one starts filling.
+                // Hard opt-out from ambient parent animations: the fill is
+                // driven by 50ms ticks and by discrete resets at item-change.
+                // A parent transaction in flight would otherwise animate
+                // full → empty, visible as the just-completed segment
+                // "rewinding" before the next one starts filling.
                 .animation(nil, value: fillWidth)
         }
         .frame(width: width, alignment: .leading)
@@ -62,9 +52,8 @@ struct SegmentedProgressBar: View {
     private func filled(at index: Int) -> Double {
         if index < currentIndex { return 1 }
         if index == currentIndex {
-            // Reduced motion: a discrete tick (empty until the item ends,
-            // then full at index advance) is preferable to a continuous
-            // 5s linear sweep — see design.md § Motion principles.
+            // Reduced motion → discrete tick instead of a continuous 5s
+            // linear sweep (design.md § Motion principles).
             if reduceMotion { return 0 }
             return min(max(progress, 0), 1)
         }

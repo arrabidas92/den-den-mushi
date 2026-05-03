@@ -2,10 +2,8 @@ import Foundation
 import os
 
 /// On-disk `UserStateRepository`. Mutations land in memory immediately and
-/// are flushed to the JSON file via a 500 ms debounced `Task` per turn.
-/// Bursts (e.g. five `markSeen` calls during a binge-watch) coalesce into
-/// a single disk write. `flushNow()` is the explicit drain hook called
-/// from `.onDisappear` and `.background` to bound state loss on suspend.
+/// are flushed via a 500 ms debounced task — bursts coalesce into one disk
+/// write. `flushNow()` is the explicit drain called on dismiss/background.
 actor PersistedUserStateStore: UserStateRepository {
 
     private nonisolated static let log = Logger(
@@ -30,10 +28,8 @@ actor PersistedUserStateStore: UserStateRepository {
         self.state = Self.loadOrRecover(at: fileURL)
     }
 
-    /// Default-location convenience init.
-    /// `~/Library/Application Support/Stories/state.json`, with the file
-    /// excluded from iCloud backup (state is reproducible — re-syncing it
-    /// would waste bandwidth).
+    /// `~/Library/Application Support/Stories/state.json`, excluded from
+    /// iCloud backup (state is reproducible).
     static func makeInApplicationSupport(
         clock: any Clock<Duration> = ContinuousClock(),
         debounce: Duration = .milliseconds(500)
@@ -57,7 +53,6 @@ actor PersistedUserStateStore: UserStateRepository {
             throw StoryError.persistenceUnavailable(underlying: error)
         }
         var fileURL = dir.appendingPathComponent("state.json", isDirectory: false)
-        // Mark excluded-from-backup once on the parent dir; new files inherit.
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try? fileURL.setResourceValues(values)
@@ -90,8 +85,6 @@ actor PersistedUserStateStore: UserStateRepository {
         state.likedItemIDs.contains(id)
     }
 
-    /// Cancels any pending debounced flush and writes synchronously.
-    /// Idempotent — calling on an unchanged store is a cheap no-op write.
     func flushNow() async {
         pendingFlush?.cancel()
         pendingFlush = nil
@@ -112,18 +105,14 @@ actor PersistedUserStateStore: UserStateRepository {
     }
 
     private func flushSynchronouslyIfStillPending() {
-        // Re-entered after the sleep on the actor's executor. The Task we
-        // came from may have been cancelled and replaced — only proceed if
-        // we are still the current pending task.
+        // The task we came from may have been cancelled and replaced during
+        // the sleep — only proceed if we're still the current pending task.
         guard pendingFlush?.isCancelled == false else { return }
         pendingFlush = nil
         flushSynchronously()
     }
 
     private func flushSynchronously() {
-        // Snapshot + write in a single actor turn — no `await` between them.
-        // Mutations queued mid-flush wait their turn cleanly, no partial-state
-        // window observable on disk.
         let snapshot = state
         do {
             let data = try JSONEncoder().encode(snapshot)
@@ -133,10 +122,8 @@ actor PersistedUserStateStore: UserStateRepository {
         }
     }
 
-    /// Reads the file at `fileURL` and returns the parsed state.
-    /// - Missing file → empty state (first launch).
-    /// - Corrupt file → log, delete, return empty state.
-    /// - Unreadable file (permission etc.) → empty state with a logged error.
+    /// Missing → empty state. Corrupt → delete + empty state. Unreadable →
+    /// empty state with logged error.
     private nonisolated static func loadOrRecover(at fileURL: URL) -> UserState {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else { return .empty }

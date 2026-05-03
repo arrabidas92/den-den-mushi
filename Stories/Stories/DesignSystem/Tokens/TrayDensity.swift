@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// Inter-item spacing in the horizontal tray. Avatar size stays 64pt
-/// across densities — only the gap between items moves — so the ring
-/// signature is constant and the user perception of "this is a stories
-/// tray" never wobbles.
+/// Inter-item spacing in the horizontal tray. Avatar size is constant —
+/// only the gap moves — so the ring signature stays stable.
 enum TrayDensity: Sendable, CaseIterable {
     case compact
     case regular
