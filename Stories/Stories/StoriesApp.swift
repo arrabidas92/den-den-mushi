@@ -4,8 +4,10 @@ import os
 /// Composition root. Holds the root `StoryListViewModel` as an optional
 /// `@State`: hydration is `async throws` (the persisted store reads from
 /// `Application Support`), so we cannot construct the ViewModel from
-/// `App.init`. The `.task` on the root View hydrates it; until ready,
-/// `LoadingView` stands in.
+/// `App.init`. The `.task` on the root View hydrates it; until ready, a
+/// skeleton tray (shimmering rings) stands in, so the bootstrap surface
+/// matches the in-app loading affordance instead of flashing a generic
+/// spinner for ~3 frames.
 ///
 /// Fallback chain: if `PersistedUserStateStore` cannot initialise (rare —
 /// filesystem unavailable, bundle resource missing), the bootstrap drops
@@ -35,7 +37,7 @@ struct StoriesApp: App {
                 } else if let error = bootstrapError {
                     bootstrapErrorView(error)
                 } else {
-                    LoadingView()
+                    BootstrapSkeletonView()
                 }
             }
             .preferredColorScheme(.dark)
@@ -111,5 +113,38 @@ struct StoriesApp: App {
                 .accessibilityLabel("Retry loading stories")
             }
         }
+    }
+}
+
+// MARK: - Bootstrap skeleton
+
+/// Shown while the persisted store hydrates. Mirrors the tray skeleton
+/// inside `StoryListView` (8 shimmering rings) so the bootstrap surface
+/// is visually continuous with the first loaded frame — no spinner, no
+/// snap. The cells are non-interactive: tapping a placeholder is a no-op.
+private struct BootstrapSkeletonView: View {
+
+    @Environment(\.trayDensity) private var density
+    private static let skeletonCount = 8
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: density.itemSpacing) {
+                    ForEach(0..<Self.skeletonCount, id: \.self) { _ in
+                        StoryTrayItem(state: .loading, density: density)
+                    }
+                }
+                .padding(.horizontal, Spacing.l)
+                .padding(.vertical, Spacing.m)
+            }
+            .scrollDisabled(true)
+            .frame(height: StoryTrayItem.avatarSize + 2 * Spacing.m + Spacing.s + 16)
+            Divider()
+                .background(Color.surfaceElevated.opacity(0.4))
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.background)
     }
 }

@@ -18,7 +18,7 @@ struct StoryRing: View {
     let state: RingState
     let size: CGFloat
 
-    @SwiftUI.State private var pulseOpacity: Double = 1.0
+    @SwiftUI.State private var shimmerPhase: CGFloat = -1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 3pt gap between ring stroke and inner content.
@@ -26,18 +26,42 @@ struct StoryRing: View {
 
     var body: some View {
         Circle()
-            .strokeBorder(strokeColor, lineWidth: lineWidth)
+            .strokeBorder(strokeStyle, lineWidth: lineWidth)
             .frame(width: size, height: size)
-            .opacity(pulseOpacity)
-            .onAppear { startPulseIfLoading() }
-            .onChange(of: state) { _, _ in startPulseIfLoading() }
+            .onAppear { startShimmerIfLoading() }
+            .onChange(of: state) { _, _ in startShimmerIfLoading() }
     }
 
-    private var strokeColor: Color {
+    /// Resolved as `AnyShapeStyle` so the loading branch can hand back a
+    /// gradient while the static branches return a flat colour. SwiftUI's
+    /// `strokeBorder` accepts any `ShapeStyle`, so the type erasure is the
+    /// only friction.
+    private var strokeStyle: AnyShapeStyle {
         switch state {
-        case .unseen, .loading: return .ringUnseen
-        case .seen:             return .ringSeen
+        case .unseen:
+            return AnyShapeStyle(Color.ringUnseen)
+        case .seen:
+            return AnyShapeStyle(Color.ringSeen)
+        case .loading:
+            return AnyShapeStyle(shimmerGradient)
         }
+    }
+
+    /// Angular gradient with a bright highlight that sweeps around the
+    /// ring. `shimmerPhase` rotates the gradient via the start-angle so
+    /// the highlight orbits the circle rather than fading uniformly —
+    /// reads as motion, not a pulse.
+    private var shimmerGradient: AngularGradient {
+        AngularGradient(
+            gradient: Gradient(stops: [
+                .init(color: Color.ringSeen, location: 0.0),
+                .init(color: Color.ringUnseen, location: 0.5),
+                .init(color: Color.ringSeen, location: 1.0),
+            ]),
+            center: .center,
+            startAngle: .degrees(360 * Double(shimmerPhase)),
+            endAngle: .degrees(360 * Double(shimmerPhase) + 360),
+        )
     }
 
     private var lineWidth: CGFloat {
@@ -47,13 +71,14 @@ struct StoryRing: View {
         }
     }
 
-    private func startPulseIfLoading() {
+    private func startShimmerIfLoading() {
         guard state == .loading, !reduceMotion else {
-            pulseOpacity = 1.0
+            shimmerPhase = 0
             return
         }
-        withAnimation(.easeInOut(duration: Motion.skeletonPulse.seconds).repeatForever(autoreverses: true)) {
-            pulseOpacity = 0.4
+        shimmerPhase = 0
+        withAnimation(.linear(duration: Motion.skeletonPulse.seconds).repeatForever(autoreverses: false)) {
+            shimmerPhase = 1
         }
     }
 }

@@ -134,6 +134,83 @@ struct ViewerStateModelTests {
         #expect(model.currentItemIndex == 0)
     }
 
+    // MARK: - End-of-loaded-list pagination
+
+    @Test("nextItem at end fetches more users via loadMoreUsers and advances instead of dismissing")
+    func nextItemPaginatesBeforeDismiss() async {
+        let users = Self.makeUsers([1])
+        let extras = Self.makeUsers([2]).map { story -> Story in
+            // Rename the appended user so we can assert we landed on it.
+            let newUser = User(
+                id: "extra",
+                stableID: "extra",
+                username: "extra",
+                avatarURL: story.user.avatarURL,
+            )
+            return Story(id: "extra", user: newUser, items: story.items)
+        }
+        let store = InMemoryUserStateStore()
+        let clock = TestClock()
+        let model = ViewerStateModel(
+            users: users,
+            startUserIndex: 0,
+            stateStore: store,
+            clock: clock,
+            playback: PlaybackController(clock: clock, itemDuration: .seconds(5), tickInterval: .milliseconds(100)),
+            prefetcher: nil,
+            loadMoreUsers: { extras },
+        )
+        model.nextItem()                          // would dismiss without the hook
+        for _ in 0..<8 { await Task.yield() }
+        #expect(model.shouldDismiss == false)
+        #expect(model.users.count == 2)
+        #expect(model.currentUserIndex == 1)
+        #expect(model.currentItemIndex == 0)
+        #expect(model.currentUser.id == "extra")
+    }
+
+    @Test("nextItem at end dismisses when loadMoreUsers returns no users")
+    func nextItemDismissesWhenNoMore() async {
+        let users = Self.makeUsers([1])
+        let store = InMemoryUserStateStore()
+        let clock = TestClock()
+        let model = ViewerStateModel(
+            users: users,
+            startUserIndex: 0,
+            stateStore: store,
+            clock: clock,
+            playback: PlaybackController(clock: clock, itemDuration: .seconds(5), tickInterval: .milliseconds(100)),
+            prefetcher: nil,
+            loadMoreUsers: { [] },
+        )
+        model.nextItem()
+        for _ in 0..<8 { await Task.yield() }
+        #expect(model.shouldDismiss)
+    }
+
+    @Test("nextUser at end fetches more users via loadMoreUsers and advances instead of dismissing")
+    func nextUserPaginatesBeforeDismiss() async {
+        let users = Self.makeUsers([2])
+        let extras = Self.makeUsers([1])
+        let store = InMemoryUserStateStore()
+        let clock = TestClock()
+        let model = ViewerStateModel(
+            users: users,
+            startUserIndex: 0,
+            stateStore: store,
+            clock: clock,
+            playback: PlaybackController(clock: clock, itemDuration: .seconds(5), tickInterval: .milliseconds(100)),
+            prefetcher: nil,
+            loadMoreUsers: { extras },
+        )
+        model.nextUser()
+        for _ in 0..<8 { await Task.yield() }
+        #expect(model.shouldDismiss == false)
+        #expect(model.users.count == 2)
+        #expect(model.currentUserIndex == 1)
+        #expect(model.currentItemIndex == 0)
+    }
+
     // MARK: - Seen marking (immediate on item start)
 
     @Test("a story whose image renders is marked seen immediately")

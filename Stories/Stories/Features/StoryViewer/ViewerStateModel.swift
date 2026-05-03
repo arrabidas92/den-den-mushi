@@ -70,11 +70,20 @@ final class ViewerStateModel: Identifiable {
     // MARK: - Collaborators
 
     let playback: PlaybackController
-    let users: [Story]
+    private(set) var users: [Story]
 
     private let stateStore: any UserStateRepository
     private let clock: any Clock<Duration>
     private let prefetcher: ImagePrefetchHandle?
+    /// Optional async hook the viewer calls when navigation reaches the end
+    /// of the currently loaded users. Returns the newly appended users (or
+    /// an empty array if there are no more). Lets the viewer keep playing
+    /// across tray-pagination boundaries without coupling to the list VM.
+    private let loadMoreUsers: (@MainActor () async -> [Story])?
+    /// True while `attemptLoadMoreUsers` is in flight. Prevents stacking
+    /// concurrent load attempts when the user power-skims the right zone
+    /// at the very end of the loaded users.
+    private var isLoadingMoreUsers = false
 
     // MARK: - Init
 
@@ -86,6 +95,7 @@ final class ViewerStateModel: Identifiable {
         clock: any Clock<Duration> = ContinuousClock(),
         playback: PlaybackController? = nil,
         prefetcher: ImagePrefetchHandle? = nil,
+        loadMoreUsers: (@MainActor () async -> [Story])? = nil,
     ) {
         precondition(!users.isEmpty, "ViewerStateModel requires at least one user")
         precondition(users.indices.contains(startUserIndex), "startUserIndex out of range")
@@ -97,6 +107,7 @@ final class ViewerStateModel: Identifiable {
         self.clock = clock
         self.playback = playback ?? PlaybackController(clock: clock)
         self.prefetcher = prefetcher
+        self.loadMoreUsers = loadMoreUsers
 
         self.playback.onItemEnd = { [weak self] in self?.nextItem() }
     }
@@ -198,7 +209,7 @@ final class ViewerStateModel: Identifiable {
             currentItemIndex = 0
             restartForNewUser()
         } else {
-            dismiss()
+            advanceBeyondLoadedOrDismiss()
         }
     }
 
@@ -223,7 +234,7 @@ final class ViewerStateModel: Identifiable {
     /// Horizontal swipe to the next user.
     func nextUser() {
         guard currentUserIndex + 1 < users.count else {
-            dismiss()
+            advanceBeyondLoadedOrDismiss()
             return
         }
         currentUserIndex += 1
@@ -250,6 +261,42 @@ final class ViewerStateModel: Identifiable {
     func dismiss() {
         playback.stop()
         shouldDismiss = true
+    }
+
+    /// End-of-loaded-list path. If a `loadMoreUsers` hook was provided,
+    /// pause playback and try to fetch the next page; on success we append
+    /// the new users and advance to the first of them. Without a hook, or
+    /// when the hook returns no users, we dismiss — Instagram parity for
+    /// the very last story.
+    ///
+    /// `isLoadingMoreUsers` is set synchronously before the await so a
+    /// second tap-forward (or a re-entrant `onItemEnd` if the playback
+    /// reset is racy) cannot stack a second load attempt.
+    private func advanceBeyondLoadedOrDismiss() {
+        guard let loadMoreUsers else {
+            dismiss()
+            return
+        }
+        guard !isLoadingMoreUsers else { return }
+        isLoadingMoreUsers = true
+        // Stop the playback while we wait — the timer is otherwise still
+        // ticking on a fully-progressed bar and `onItemEnd` would fire
+        // again as soon as the loop wakes.
+        playback.stop()
+        Task { [weak self] in
+            guard let self else { return }
+            let appended = await loadMoreUsers()
+            self.isLoadingMoreUsers = false
+            guard !appended.isEmpty else {
+                self.dismiss()
+                return
+            }
+            let firstNewIndex = self.users.count
+            self.users.append(contentsOf: appended)
+            self.currentUserIndex = firstNewIndex
+            self.currentItemIndex = 0
+            self.restartForNewUser()
+        }
     }
 
     /// Forces the underlying state store to flush its debounce window

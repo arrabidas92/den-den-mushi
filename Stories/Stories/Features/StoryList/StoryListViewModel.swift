@@ -207,6 +207,13 @@ final class StoryListViewModel {
     /// Resume rule: if some items are unseen, start at the first unseen
     /// item; if every item is already seen, start at the first item
     /// (Instagram parity — re-watching from the start, not the last seen).
+    ///
+    /// The viewer is also given a `loadMoreUsers` hook that defers to
+    /// `loadMoreIfNeeded` and returns whatever new users were appended.
+    /// This lets auto-advance cross tray-pagination boundaries instead of
+    /// dismissing when the reader hits the end of the currently loaded
+    /// users — the previous behaviour read as a bug because the dismiss
+    /// fired in the middle of an apparent multi-user session.
     func makeViewerState(startingAt story: Story) async -> ViewerStateModel? {
         guard let index = pages.firstIndex(where: { $0.id == story.id }) else { return nil }
         let resumeIndex = await firstUnseenIndex(in: story) ?? 0
@@ -215,7 +222,23 @@ final class StoryListViewModel {
             startUserIndex: index,
             startItemIndex: resumeIndex,
             stateStore: userStateRepository,
+            loadMoreUsers: { [weak self] in
+                guard let self else { return [] }
+                return await self.loadMoreUsersForViewer()
+            },
         )
+    }
+
+    /// Loads the next tray page on behalf of the viewer and returns the
+    /// users that were appended (empty when there are no more pages or
+    /// when the load failed). The viewer uses this to keep playing across
+    /// page boundaries instead of dismissing at the end of the currently
+    /// loaded users.
+    private func loadMoreUsersForViewer() async -> [Story] {
+        let beforeCount = pages.count
+        await loadMoreIfNeeded()
+        guard pages.count > beforeCount else { return [] }
+        return Array(pages[beforeCount..<pages.count])
     }
 
     /// Returns the index of the first unseen item in `story`, or `nil`
