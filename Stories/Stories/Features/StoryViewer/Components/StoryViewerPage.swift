@@ -1,30 +1,35 @@
 import SwiftUI
+import Nuke
 import NukeUI
 
 /// One full-bleed page of the viewer — image (or failure frame), tap
-/// zones, long-press immersive, double-tap heart pop. Knows about the
-/// *current* item only; horizontal user navigation and swipe-down dismiss
-/// live one level up in `StoryViewerView` so a single arbitrated drag
-/// gesture handles both axes.
+/// zones, long-press immersive. Knows about the *current* item only;
+/// horizontal user navigation and swipe-down dismiss live one level up
+/// in `StoryViewerView` so a single arbitrated drag gesture handles both
+/// axes.
 struct StoryViewerPage: View {
 
     @Bindable var state: ViewerStateModel
     let item: StoryItem
     /// Set by `StoryViewerView` based on the user-pagination index — only
-    /// the foreground page handles gestures and renders the heart-pop
-    /// overlay. Adjacent (parallax-offset) pages render the image alone.
+    /// the foreground page handles gestures. Adjacent (parallax-offset)
+    /// pages render the image alone.
     var isActive: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var loadFailed = false
-    @State private var heartPopAnimationProgress: HeartPopProgress = .hidden
+    /// Last successfully rendered image for this page, kept across URL
+    /// retargets so a cache miss on the new item doesn't expose the
+    /// parent's black background for the duration of the disk/network
+    /// fetch. Cleared on a hard view-identity change (different page slot
+    /// — handled by SwiftUI's `@State` reset semantics).
+    @State private var lastImage: Image?
 
     /// Empirical: a long-press whose finger has moved more than this far
     /// is no longer a press. SwiftUI's `maximumDistance` parameter handles
     /// the cancellation natively.
     private static let longPressMaxMovement: CGFloat = 8
     private static let longPressMinimumDuration: Double = 0.2
-    private static let heartPopSize: CGFloat = 96
 
     var body: some View {
         ZStack {
@@ -34,11 +39,8 @@ struct StoryViewerPage: View {
                 ViewerTapZones(
                     onPrevious: state.previousItem,
                     onNext: state.nextItem,
-                    onDoubleTap: handleDoubleTap,
                 )
                 .allowsHitTesting(!loadFailed && !state.isImmersive)
-
-                heartPopOverlay
             }
         }
         .contentShape(Rectangle())
@@ -57,19 +59,44 @@ struct StoryViewerPage: View {
         if loadFailed {
             failureFrame
         } else {
-            LazyImage(url: item.imageURL) { state in
-                if let image = state.image {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else if state.error != nil {
-                    Color.surface
-                } else {
-                    Color.surface
+            // Black-flash on tap-forward fix:
+            // 1. No `.id(item.id)` on the LazyImage — re-keying tears down
+            //    the previous render and forces a placeholder frame even on
+            //    a memory-cache hit.
+            // 2. `lastImage` keeps the previously rendered image on screen
+            //    when NukeUI retargets to a new URL. On a memory-cache hit
+            //    `state.image` is non-nil within a frame and the swap is
+            //    invisible; on a cache miss (user power-skims past the
+            //    prefetch window, or memory-cache eviction) the previous
+            //    image stays visible until the disk/network fetch resolves
+            //    rather than exposing the parent's black background.
+            // 3. `Color.clear` in the no-image branch — when there is genuinely
+            //    no image to show (first item, no prior render), we don't
+            //    paint an explicit black fill that would override anything
+            //    NukeUI is still drawing under us.
+            ZStack {
+                lastImage?
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                LazyImage(url: item.imageURL) { state in
+                    if let image = state.image {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else if state.error != nil {
+                        Color.surface
+                    } else {
+                        Color.clear
+                    }
                 }
-            }
-            .onCompletion { result in
-                if case .failure = result { handleLoadFailure() }
+                .onCompletion { result in
+                    switch result {
+                    case .success(let response):
+                        lastImage = Image(uiImage: response.image)
+                    case .failure:
+                        handleLoadFailure()
+                    }
+                }
             }
             .clipped()
         }
@@ -118,53 +145,6 @@ struct StoryViewerPage: View {
         }
     }
 
-    // MARK: - Double-tap heart pop
-
-    private func handleDoubleTap() {
-        guard isActive, !loadFailed else { return }
-        Haptics.like()
-        state.doubleTapLike(at: .zero)
-    }
-
-    @ViewBuilder
-    private var heartPopOverlay: some View {
-        if let pop = state.pendingHeartPop {
-            Image(systemName: "heart.fill")
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: Self.heartPopSize, height: Self.heartPopSize)
-                .foregroundStyle(Color.accentLike)
-                .scaleEffect(heartPopAnimationProgress.scale)
-                .opacity(heartPopAnimationProgress.opacity)
-                .allowsHitTesting(false)
-                // Re-key on `pop.id` so back-to-back pops animate distinctly.
-                .id(pop.id)
-                .onAppear { animateHeartPop() }
-        }
-    }
-
-    private func animateHeartPop() {
-        guard !reduceMotion else {
-            heartPopAnimationProgress = .visible
-            return
-        }
-        heartPopAnimationProgress = .hidden
-        withAnimation(Motion.heartPopSpring) {
-            heartPopAnimationProgress = .peak
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            withAnimation(Motion.heartPopSpring) {
-                heartPopAnimationProgress = .visible
-            }
-            try? await Task.sleep(for: .milliseconds(420))
-            withAnimation(.easeOut(duration: Motion.standard.seconds)) {
-                heartPopAnimationProgress = .hidden
-            }
-        }
-    }
-
     // MARK: - Failure handling
 
     private func handleLoadFailure() {
@@ -178,31 +158,6 @@ struct StoryViewerPage: View {
         loadFailed = false
         state.playback.reset()
         state.playback.resume()
-    }
-
-    // MARK: - Heart-pop animation phases
-
-    /// Three discrete phases driven by the spring + delay sequence.
-    /// Naming the phases keeps the animateHeartPop body readable.
-    private enum HeartPopProgress: Equatable {
-        case hidden
-        case peak     // scale 1.4 + opacity 1
-        case visible  // scale 1.0 + opacity 1
-
-        var scale: CGFloat {
-            switch self {
-            case .hidden:  return 0
-            case .peak:    return 1.4
-            case .visible: return 1.0
-            }
-        }
-
-        var opacity: Double {
-            switch self {
-            case .hidden: return 0
-            case .peak, .visible: return 1
-            }
-        }
     }
 }
 

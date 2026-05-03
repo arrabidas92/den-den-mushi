@@ -132,19 +132,25 @@ struct StoryListViewModelTests {
     @Test("loadMoreIfNeeded appends the next page")
     func loadMoreAppends() async {
         let p0 = Self.makeStories(3)
-        let p1 = Self.makeStories(3).map { $0.withPageSuffix(1) }
+        // Suffix p1 with global indices that follow p0 (3, 4, 5) so cross-page
+        // IDs stay disjoint — the same contract `LocalStoryRepository` enforces.
+        let p1 = Self.makeStories(3).enumerated().map { offset, story in
+            story.withGlobalIndex(3 + offset)
+        }
         let (vm, _, _) = Self.makeVM(pages: [p0, p1])
         await vm.loadInitial()
         await vm.loadMoreIfNeeded()
         #expect(vm.pages.count == 6)
-        // p1 IDs are suffixed.
-        #expect(vm.pages.last?.id.hasSuffix("-p1") == true)
+        // Every p1 cell carries a -g{n} suffix.
+        #expect(vm.pages.last?.id.contains("-g") == true)
     }
 
     @Test("two concurrent loadMoreIfNeeded calls fire only one fetch")
     func loadMoreNoDoubleLoad() async {
         let p0 = Self.makeStories(3)
-        let p1 = Self.makeStories(3).map { $0.withPageSuffix(1) }
+        let p1 = Self.makeStories(3).enumerated().map { offset, story in
+            story.withGlobalIndex(3 + offset)
+        }
         let (vm, repo, _) = Self.makeVM(pages: [p0, p1])
         await vm.loadInitial()
         let initialCalls = await repo.loadCallCount
@@ -162,7 +168,9 @@ struct StoryListViewModelTests {
     @Test("loadMoreIfNeeded error leaves isLoadingMore false and is retryable")
     func loadMoreErrorRetryable() async {
         let p0 = Self.makeStories(3)
-        let p1 = Self.makeStories(3).map { $0.withPageSuffix(1) }
+        let p1 = Self.makeStories(3).enumerated().map { offset, story in
+            story.withGlobalIndex(3 + offset)
+        }
         let (vm, repo, _) = Self.makeVM(pages: [p0, p1])
         await vm.loadInitial()
         await repo.injectError(.pageOutOfRange, forPage: 1)
@@ -241,6 +249,22 @@ struct StoryListViewModelTests {
         // Only the first item of u0 — not enough to flip the ring.
         vm.applySessionSeen([stories[0].items[0].id])
         #expect(vm.fullySeenStoryIDs.contains("u0") == false)
+    }
+
+    @Test("applySessionSeen unions session IDs with previously persisted seen items")
+    func applySessionSeenUnionsWithPersisted() async {
+        let stories = Self.makeStories(1)
+        let store = InMemoryUserStateStore()
+        // Pre-seed: the first item was already seen in a prior session
+        // (persisted to disk). The viewer this session only marks the
+        // second item — the union should still flip the ring.
+        await store.markSeen(itemID: stories[0].items[0].id)
+        let (vm, _, _) = Self.makeVM(pages: [stories], store: store)
+        await vm.loadInitial()
+        #expect(vm.fullySeenStoryIDs.contains("u0") == false)
+
+        vm.applySessionSeen([stories[0].items[1].id])
+        #expect(vm.fullySeenStoryIDs.contains("u0"))
     }
 
     // MARK: - Resume (start at first unseen item)

@@ -5,20 +5,14 @@ import SwiftUI
 /// that *forward* is the dominant action — a Fitts-law improvement, not a
 /// stylistic choice (see `design.md` § *Tap zones*).
 ///
-/// `onNext`/`onPrevious` fire *immediately* on single tap — no waiting
-/// for a possible double-tap. SwiftUI's
-/// `TapGesture(count: 2).exclusively(before: TapGesture(count: 1))`
-/// composition forces a 250–300 ms wait before the single tap commits,
-/// which the reviewer perceived as a noticeable lag on every forward
-/// tap. We accept the trade-off that a double-tap on the right zone
-/// also advances the story by one item: the heart pop fires on the
-/// newly-current item, which mirrors Instagram's behaviour when a user
-/// taps quickly twice.
+/// Single-tap only — fires immediately with no arbitration delay. The
+/// double-tap heart-pop is mounted *above* this view in `StoryViewerPage`
+/// via a `simultaneousGesture`, so a quick double-tap on the right zone
+/// fires the heart pop AND advances by one item (Instagram parity).
 struct ViewerTapZones: View {
 
     let onPrevious: () -> Void
     let onNext: () -> Void
-    let onDoubleTap: () -> Void
 
     var body: some View {
         GeometryReader { geo in
@@ -30,22 +24,13 @@ struct ViewerTapZones: View {
                     .accessibilityLabel("Previous")
                     .accessibilityAddTraits(.isButton)
 
-                rightZone
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onNext)
+                    .accessibilityLabel("Next")
+                    .accessibilityAddTraits(.isButton)
             }
         }
-    }
-
-    private var rightZone: some View {
-        // Two independent `onTapGesture` modifiers (count 2 declared
-        // *before* count 1) let SwiftUI fire the single-tap path with
-        // minimal arbitration delay while still routing a recognised
-        // double-tap to `onDoubleTap`.
-        Color.clear
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2, perform: onDoubleTap)
-            .onTapGesture(count: 1, perform: onNext)
-            .accessibilityLabel("Next")
-            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -55,7 +40,6 @@ struct ViewerTapZones: View {
         ViewerTapZones(
             onPrevious: {},
             onNext: {},
-            onDoubleTap: {},
         )
         // Visualise the split for the preview — not part of the runtime UI.
         HStack(spacing: 0) {

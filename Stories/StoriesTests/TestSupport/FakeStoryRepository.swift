@@ -36,7 +36,8 @@ actor FakeStoryRepository: StoryRepository {
         case .stub(let count, let pageSize):
             guard pageIndex >= 0 else { throw StoryError.pageOutOfRange }
             return (0..<pageSize).map { i in
-                let n = (pageIndex * pageSize + i) % max(count, 1)
+                let globalIndex = pageIndex * pageSize + i
+                let n = globalIndex % max(count, 1)
                 let user = User(
                     id: "u\(n)",
                     stableID: "u\(n)",
@@ -48,7 +49,7 @@ actor FakeStoryRepository: StoryRepository {
                     imageURL: URL(string: "https://example.com/story/\(n).png")!,
                     createdAt: Date(timeIntervalSince1970: TimeInterval(n))
                 )
-                return Story(id: user.id, user: user, items: [item]).withPageSuffix(pageIndex)
+                return Story(id: user.id, user: user, items: [item]).withGlobalIndex(globalIndex)
             }
         }
     }

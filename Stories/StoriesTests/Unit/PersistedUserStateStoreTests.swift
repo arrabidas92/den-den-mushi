@@ -82,7 +82,7 @@ struct PersistedUserStateStoreTests {
         let debounce: Duration = .milliseconds(150)
         let store = try await PersistedUserStateStore(fileURL: url, debounce: debounce)
 
-        // Five mutations in quick succession.
+        // Five mutations in quick succession.C
         for i in 0..<5 {
             await store.markSeen(itemID: "burst-\(i)")
         }

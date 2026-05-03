@@ -198,50 +198,6 @@ struct ViewerStateModelTests {
         #expect(storedLike == false)
     }
 
-    @Test("doubleTapLike sets liked, fires heart pop")
-    func doubleTapLikeSetsLiked() async {
-        let users = Self.makeUsers([1])
-        let (model, _, _) = Self.makeModel(users: users)
-        await model.onAppear()
-        model.doubleTapLike(at: CGPoint(x: 100, y: 200))
-        #expect(model.isLiked == true)
-        #expect(model.pendingHeartPop != nil)
-        #expect(model.pendingHeartPop?.location == CGPoint(x: 100, y: 200))
-    }
-
-    @Test("doubleTapLike on an already-liked item stays liked, refires the pop")
-    func doubleTapLikeIdempotent() async {
-        let users = Self.makeUsers([1])
-        let (model, store, _) = Self.makeModel(users: users)
-        await model.onAppear()
-
-        model.doubleTapLike(at: CGPoint(x: 100, y: 200))
-        for _ in 0..<8 { await Task.yield() }
-        let firstID = model.pendingHeartPop?.id
-
-        // Second double-tap on a liked item: stays liked, distinct pop.
-        model.doubleTapLike(at: CGPoint(x: 50, y: 100))
-        #expect(model.isLiked == true)
-        #expect(model.pendingHeartPop?.id != firstID)
-
-        // Persistence: only the first call ever toggled.
-        let toggleCount = await store.toggleLikeCallCount
-        #expect(toggleCount == 1)
-    }
-
-    @Test("pendingHeartPop is cleared after the animation window")
-    func heartPopClearsAfterWindow() async {
-        let users = Self.makeUsers([1])
-        let (model, _, clock) = Self.makeModel(users: users)
-        await model.onAppear()
-        model.doubleTapLike(at: .zero)
-        #expect(model.pendingHeartPop != nil)
-        await clock.advance(by: .milliseconds(800))
-        // The clear hops to MainActor inside the task; drain.
-        for _ in 0..<16 { await Task.yield() }
-        #expect(model.pendingHeartPop == nil)
-    }
-
     // MARK: - Immersive
 
     @Test("beginImmersive pauses playback; endImmersive resumes")

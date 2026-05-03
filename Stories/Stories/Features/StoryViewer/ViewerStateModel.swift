@@ -29,7 +29,17 @@ final class ViewerStateModel: Identifiable {
 
     // MARK: - Per-item state
 
-    private(set) var isLiked = false
+    /// In-memory like state for *every item of the current user*, preloaded
+    /// when the user becomes active. `isLiked` reads from this set
+    /// synchronously, so a tap-forward to the next item updates the heart
+    /// in the same frame the page changes — without the previous one-frame
+    /// flicker where the chrome rendered with the stale value, then flipped
+    /// to the correct value after the persistence actor returned.
+    private var likedItemIDsForCurrentUser: Set<String> = []
+
+    /// Synchronous like-state for the current item. Reads from
+    /// `likedItemIDsForCurrentUser`, populated once per user.
+    var isLiked: Bool { likedItemIDsForCurrentUser.contains(currentItem.id) }
 
     /// Items marked seen during this viewer session. Populated synchronously
     /// in `onItemDidStart`, before the persistence hop completes — so the
@@ -42,7 +52,6 @@ final class ViewerStateModel: Identifiable {
     private(set) var isImmersive = false
     private(set) var dragOffset: CGFloat = 0
     private(set) var dragProgress: Double = 0
-    private(set) var pendingHeartPop: HeartPop?
 
     // MARK: - Collaborators
 
@@ -52,9 +61,6 @@ final class ViewerStateModel: Identifiable {
     private let stateStore: any UserStateRepository
     private let clock: any Clock<Duration>
     private let prefetcher: ImagePrefetchHandle?
-    private let heartPopWindow: Duration
-
-    private var heartPopClearTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -66,7 +72,6 @@ final class ViewerStateModel: Identifiable {
         clock: any Clock<Duration> = ContinuousClock(),
         playback: PlaybackController? = nil,
         prefetcher: ImagePrefetchHandle? = nil,
-        heartPopWindow: Duration = .milliseconds(800),
     ) {
         precondition(!users.isEmpty, "ViewerStateModel requires at least one user")
         precondition(users.indices.contains(startUserIndex), "startUserIndex out of range")
@@ -78,7 +83,6 @@ final class ViewerStateModel: Identifiable {
         self.clock = clock
         self.playback = playback ?? PlaybackController(clock: clock)
         self.prefetcher = prefetcher
-        self.heartPopWindow = heartPopWindow
 
         self.playback.onItemEnd = { [weak self] in self?.nextItem() }
     }
@@ -86,10 +90,10 @@ final class ViewerStateModel: Identifiable {
     // MARK: - Lifecycle
 
     /// Called by the View on appear. Resets playback for the start item,
-    /// loads its `isLiked` state from the store, marks the current item
+    /// preloads the like-set for the current user, marks the current item
     /// as seen, and prefetches the next image.
     func onAppear() async {
-        await reloadLikedState()
+        await reloadLikedSetForCurrentUser()
         playback.start()
         onItemDidStart()
         prefetchNext()
@@ -119,7 +123,7 @@ final class ViewerStateModel: Identifiable {
         } else if currentUserIndex + 1 < users.count {
             currentUserIndex += 1
             currentItemIndex = 0
-            restartForNewItem()
+            restartForNewUser()
         } else {
             dismiss()
         }
@@ -133,7 +137,7 @@ final class ViewerStateModel: Identifiable {
         } else if currentUserIndex > 0 {
             currentUserIndex -= 1
             currentItemIndex = max(0, users[currentUserIndex].items.count - 1)
-            restartForNewItem()
+            restartForNewUser()
         } else {
             // Already at the very first item — just rewind playback.
             playback.start()
@@ -149,7 +153,7 @@ final class ViewerStateModel: Identifiable {
         }
         currentUserIndex += 1
         currentItemIndex = 0
-        restartForNewItem()
+        restartForNewUser()
     }
 
     /// Horizontal swipe to the previous user. Falls back to a no-op
@@ -158,7 +162,7 @@ final class ViewerStateModel: Identifiable {
         if currentUserIndex > 0 {
             currentUserIndex -= 1
             currentItemIndex = 0
-            restartForNewItem()
+            restartForNewUser()
         } else {
             currentItemIndex = 0
             playback.start()
@@ -167,7 +171,6 @@ final class ViewerStateModel: Identifiable {
     }
 
     func dismiss() {
-        heartPopClearTask?.cancel()
         playback.stop()
         shouldDismiss = true
     }
@@ -181,16 +184,37 @@ final class ViewerStateModel: Identifiable {
         await stateStore.flushNow()
     }
 
+    /// Same-user item change. The like-set for this user is already
+    /// in memory, so `isLiked` resolves synchronously — no actor hop, no
+    /// stale-then-correct flicker on the chrome heart.
     private func restartForNewItem() {
         playback.start()
-        Task { await reloadLikedState() }
         onItemDidStart()
         prefetchNext()
     }
 
-    private func reloadLikedState() async {
-        let id = currentItem.id
-        isLiked = await stateStore.isLiked(id)
+    /// User change (cross-user navigation or swipe). Rebuilds the in-memory
+    /// like-set for the new user before the chrome reads `isLiked`.
+    /// Until the reload completes, `isLiked` resolves against the *previous*
+    /// user's set — which is empty for the new user's items, so the heart
+    /// reads as not-liked rather than incorrectly inheriting the previous
+    /// user's state.
+    private func restartForNewUser() {
+        likedItemIDsForCurrentUser.removeAll(keepingCapacity: true)
+        playback.start()
+        onItemDidStart()
+        prefetchNext()
+        Task { await reloadLikedSetForCurrentUser() }
+    }
+
+    private func reloadLikedSetForCurrentUser() async {
+        let user = currentUser
+        var liked: Set<String> = []
+        for item in user.items where await stateStore.isLiked(item.id) {
+            liked.insert(item.id)
+        }
+        guard user.id == currentUser.id else { return }
+        likedItemIDsForCurrentUser = liked
     }
 
     // MARK: - Like
@@ -199,47 +223,13 @@ final class ViewerStateModel: Identifiable {
     /// synchronous so the heart fills before the actor hop completes.
     func toggleLike() {
         let id = currentItem.id
-        isLiked.toggle()
+        if likedItemIDsForCurrentUser.contains(id) {
+            likedItemIDsForCurrentUser.remove(id)
+        } else {
+            likedItemIDsForCurrentUser.insert(id)
+        }
         Task { [stateStore] in
             _ = await stateStore.toggleLike(itemID: id)
-        }
-    }
-
-    /// Double-tap on the image. Idempotent toward "liked": if already
-    /// liked, the heart-pop overlay still fires (so the gesture always
-    /// feels responsive) but the persisted state is not toggled off.
-    /// A second double-tap on an unliked item never un-likes.
-    func doubleTapLike(at point: CGPoint) {
-        // Always re-fire the visual pop — schedule a new HeartPop every
-        // call. The View binds to `pendingHeartPop` and animates each
-        // distinct ID, so back-to-back double-taps yield distinct overlays.
-        let pop = HeartPop(id: UUID(), location: point)
-        pendingHeartPop = pop
-        scheduleHeartPopClear(matching: pop.id)
-
-        guard !isLiked else { return }
-        let id = currentItem.id
-        isLiked = true
-        Task { [stateStore] in
-            _ = await stateStore.toggleLike(itemID: id)
-        }
-    }
-
-    private func scheduleHeartPopClear(matching popID: UUID) {
-        heartPopClearTask?.cancel()
-        heartPopClearTask = Task { [weak self, clock, heartPopWindow] in
-            do {
-                try await clock.sleep(for: heartPopWindow)
-            } catch {
-                return
-            }
-            if Task.isCancelled { return }
-            await MainActor.run {
-                guard let self else { return }
-                if self.pendingHeartPop?.id == popID {
-                    self.pendingHeartPop = nil
-                }
-            }
         }
     }
 
@@ -274,12 +264,23 @@ final class ViewerStateModel: Identifiable {
     /// Decides between commit (sets `shouldDismiss`) and snap-back
     /// (resets drag state and resumes playback). Both branches are
     /// pure state mutations; the View animates both.
+    ///
+    /// On commit we *also* reset `dragOffset` and `dragProgress` to zero
+    /// before flipping `shouldDismiss`: the iOS 18 zoom-out transition
+    /// reads the View's current frame as the dismiss start, and a
+    /// non-zero residual offset would make the image continue sliding
+    /// downwards *during* the zoom — visually the image looks unpinned,
+    /// drifting down while it should be collapsing onto the tray
+    /// avatar. Resetting first hands a clean canvas to the matched
+    /// transition.
     func endDrag(translationY: CGFloat, velocityY: CGFloat, containerHeight: CGFloat) {
         if shouldCommitDismiss(
             translationY: translationY,
             velocityY: velocityY,
             containerHeight: containerHeight,
         ) {
+            dragOffset = 0
+            dragProgress = 0
             dismiss()
         } else {
             dragOffset = 0
@@ -306,14 +307,23 @@ final class ViewerStateModel: Identifiable {
     private func prefetchNext() {
         guard let prefetcher else { return }
         var urls: [URL] = []
-        // Next item in the current user.
-        if currentItemIndex + 1 < currentUser.items.count {
-            urls.append(currentUser.items[currentItemIndex + 1].imageURL)
+        // Next *two* items in the current user — one item of headroom is
+        // not enough when the user power-skims (one fast tap-forward
+        // every ~150 ms on the right zone outruns a single in-flight
+        // request, exposing the placeholder during the swap).
+        let lookahead = 2
+        for offset in 1...lookahead {
+            let idx = currentItemIndex + offset
+            if idx < currentUser.items.count {
+                urls.append(currentUser.items[idx].imageURL)
+            }
         }
-        // First item of the next user.
-        if currentUserIndex + 1 < users.count,
-           let firstNext = users[currentUserIndex + 1].items.first {
-            urls.append(firstNext.imageURL)
+        // First two items of the next user.
+        if currentUserIndex + 1 < users.count {
+            let nextUserItems = users[currentUserIndex + 1].items
+            for item in nextUserItems.prefix(lookahead) {
+                urls.append(item.imageURL)
+            }
         }
         prefetcher.prefetch(urls)
     }

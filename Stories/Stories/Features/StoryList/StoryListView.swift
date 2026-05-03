@@ -26,52 +26,65 @@ struct StoryListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: density.itemSpacing) {
-                    content
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: density.itemSpacing) {
+                        content
+                    }
+                    .padding(.horizontal, Spacing.l)
+                    .padding(.vertical, Spacing.m)
                 }
-                .padding(.horizontal, Spacing.l)
-                .padding(.vertical, Spacing.m)
+                .scrollClipDisabled()
+                .frame(height: StoryTrayItem.avatarSize + 2 * Spacing.m + Spacing.s + 16)
+                .onScrollGeometryChange(for: Bool.self) { geo in
+                    viewModel.shouldLoadMore(
+                        contentOffset: geo.contentOffset.x,
+                        contentSize: geo.contentSize.width,
+                        containerSize: geo.containerSize.width,
+                    )
+                } action: { _, nearEnd in
+                    guard nearEnd else { return }
+                    Task { await viewModel.loadMoreIfNeeded() }
+                }
+                .fullScreenCover(item: $presentedViewerState) { state in
+                    StoryViewerView(
+                        state: state,
+                        transitionNamespace: transitionNamespace,
+                        onDismiss: { currentStory in
+                            // Fires *before* the cover starts closing —
+                            // apply the in-session seen set synchronously
+                            // so the tray's ring is already in its final
+                            // state on the first frame of the matched
+                            // zoom-out. The cell is already centred (the
+                            // tray follows `state.currentUserIndex` via
+                            // `onCurrentUserChange` below), so the
+                            // zoom-out lands on a live, on-screen cell.
+                            presentedStory = nil
+                            viewModel.applySessionSeen(state.sessionSeenItemIDs)
+                            Task { await viewModel.refreshFullySeen(for: currentStory) }
+                        },
+                        onCurrentUserChange: { story in
+                            // The tray is hidden behind the cover, so
+                            // scrolling here is invisible — but it
+                            // guarantees the LazyHStack has the matching
+                            // cell mounted and centred by the time the
+                            // matched-zoom dismiss reads its anchor. A
+                            // cell scrolled off-screen has no
+                            // matchedTransitionSource, which collapses
+                            // the animation onto a stale frame.
+                            proxy.scrollTo(story.id, anchor: .center)
+                        },
+                    )
+                }
             }
-            .scrollClipDisabled()
-            .frame(height: StoryTrayItem.avatarSize + 2 * Spacing.m + Spacing.s + 16)
             Divider()
                 .background(Color.surfaceElevated.opacity(0.4))
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.background)
-        .onScrollGeometryChange(for: Bool.self) { geo in
-            viewModel.shouldLoadMore(
-                contentOffset: geo.contentOffset.x,
-                contentSize: geo.contentSize.width,
-                containerSize: geo.containerSize.width,
-            )
-        } action: { _, nearEnd in
-            guard nearEnd else { return }
-            Task { await viewModel.loadMoreIfNeeded() }
-        }
         .task {
             await viewModel.loadInitial()
-        }
-        .fullScreenCover(item: $presentedViewerState) { state in
-            StoryViewerView(
-                state: state,
-                transitionNamespace: transitionNamespace,
-                onDismiss: {
-                    let story = presentedStory
-                    let seenIDs = state.sessionSeenItemIDs
-                    presentedViewerState = nil
-                    presentedStory = nil
-                    // Optimistic ring flip — uses in-memory seen set so
-                    // the avatar's ring updates the same frame the cover
-                    // dismisses, without waiting on the persistence flush.
-                    viewModel.applySessionSeen(seenIDs)
-                    if let story {
-                        Task { await viewModel.refreshFullySeen(for: story) }
-                    }
-                },
-            )
         }
     }
 
@@ -80,6 +93,12 @@ struct StoryListView: View {
             onSelect(story)
             return
         }
+        // Warm the haptic engine on the *opening* tap, not on viewer
+        // appearance. The zoom transition gives us ~0.3s of headroom
+        // before the user can reach the like button — calling prewarm
+        // from `.task` inside the viewer is racy with a fast first tap
+        // and reintroduces the cold-start hang on the first like.
+        Haptics.prewarm()
         Task {
             guard let state = await viewModel.makeViewerState(startingAt: story) else { return }
             presentedStory = story

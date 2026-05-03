@@ -42,10 +42,6 @@ enum Motion {
         .linear(duration: duration.seconds)
     }
 
-    /// Spring matched to the heart-pop animation in the design spec
-    /// (response 0.35, damping 0.55).
-    static let heartPopSpring: Animation = .spring(response: 0.35, dampingFraction: 0.55)
-
     /// Spring matched to the LikeButton tap (response 0.3, damping 0.6).
     static let likeButtonSpring: Animation = .spring(response: 0.3, dampingFraction: 0.6)
 }

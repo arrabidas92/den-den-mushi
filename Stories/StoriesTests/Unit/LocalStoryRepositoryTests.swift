@@ -48,25 +48,27 @@ struct LocalStoryRepositoryTests {
         #expect(page.count == 10)
     }
 
-    @Test("IDs across pages are unique (no collision after suffixing)")
-    func crossPageIDsUnique() async throws {
+    @Test("every story and item ID is unique across all pages — even with wrap")
+    func cellIDsAreGloballyUnique() async throws {
+        // 7 base users, pageSize 10 → page 0 wraps the last 3 indices, so
+        // without per-cell suffixing the same base user would collide twice
+        // *within* page 0. The global-index suffix prevents this everywhere.
         let repo = LocalStoryRepository(stories: Self.makeStories(7))
         let p0 = try await repo.loadPage(0)
         let p1 = try await repo.loadPage(1)
         let p2 = try await repo.loadPage(2)
-        let storyIDs = (p0 + p1 + p2).map(\.id)
-        let itemIDs  = (p0 + p1 + p2).flatMap { $0.items.map(\.id) }
-        let uniqueStoryIDsAcrossPages = Set(p0.map(\.id))
-            .isDisjoint(with: Set(p1.map(\.id)))
-        #expect(uniqueStoryIDsAcrossPages)
-        #expect(Set(p1.map(\.id)).isDisjoint(with: Set(p2.map(\.id))))
-        // Sanity: every page suffix is present in every item id.
-        for s in p1 { #expect(s.id.hasSuffix("-p1")) }
-        for s in p2 { #expect(s.id.hasSuffix("-p2")) }
-        for s in p1 { for i in s.items { #expect(i.id.hasSuffix("-p1")) } }
-        // Touch the variables to silence unused warnings.
-        _ = storyIDs
-        _ = itemIDs
+        let allStoryIDs = (p0 + p1 + p2).map(\.id)
+        let allItemIDs = (p0 + p1 + p2).flatMap { $0.items.map(\.id) }
+        #expect(Set(allStoryIDs).count == allStoryIDs.count)
+        #expect(Set(allItemIDs).count == allItemIDs.count)
+        // Sanity: every cell carries the global-index suffix.
+        for (page, expectedRange) in [(p0, 0..<10), (p1, 10..<20), (p2, 20..<30)] {
+            for (i, story) in page.enumerated() {
+                let expected = "-g\(expectedRange.lowerBound + i)"
+                #expect(story.id.hasSuffix(expected))
+                for item in story.items { #expect(item.id.hasSuffix(expected)) }
+            }
+        }
     }
 
     @Test("output is deterministic across invocations")
@@ -84,18 +86,21 @@ struct LocalStoryRepositoryTests {
         #expect(page.isEmpty)
     }
 
-    @Test("n < pageSize wraps within the page and shares the page suffix")
+    @Test("n < pageSize wraps the user list but every cell gets a unique ID")
     func nLessThanPageSizeWraps() async throws {
         let repo = LocalStoryRepository(stories: Self.makeStories(7))
         let p0 = try await repo.loadPage(0)
-        // Indices 0..6, then 0,1,2 → expect 10 items total, with users 0/1/2 appearing twice.
+        // Indices 0..6, then 0,1,2 → expect 10 items total, with users 0/1/2
+        // appearing twice — but each repeat must carry a distinct global-index
+        // suffix so SwiftUI's ForEach can key them safely.
         #expect(p0.count == 10)
         let userIDs = p0.map(\.user.id)
         #expect(userIDs == ["u0", "u1", "u2", "u3", "u4", "u5", "u6", "u0", "u1", "u2"])
-        // Within a page, repeats keep the *same* suffixed ID — that's by design
-        // (intra-page dedup is acceptable; cross-page dedup is what matters).
-        #expect(p0.first?.id == "u0")
-        #expect(p0.last?.id == "u2")
+        let storyIDs = p0.map(\.id)
+        #expect(Set(storyIDs).count == storyIDs.count)
+        #expect(p0.first?.id == "u0-g0")
+        #expect(p0[7].id == "u0-g7")
+        #expect(p0.last?.id == "u2-g9")
     }
 
     @Test("negative pageIndex throws pageOutOfRange")

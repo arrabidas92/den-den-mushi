@@ -21,7 +21,7 @@ struct StoryViewerHeader: View {
 
     static let height: CGFloat = 56
     private static let avatarSize: CGFloat = 32
-    private static let closeIconSize: CGFloat = 24
+    private static let closeIconSize: CGFloat = 18
     private static let closeTouchTarget: CGFloat = 44
 
     var body: some View {
@@ -35,13 +35,26 @@ struct StoryViewerHeader: View {
                     .truncationMode(.tail)
                 Text(Self.relativeTimestamp(from: timestamp, now: now))
                     .font(.timestamp)
-                    .foregroundStyle(Color.textSecondary)
+                    // Dimmed white instead of `Color.textSecondary` (#A0A0A0):
+                    // the secondary token assumes a dark surface behind it.
+                    // In the viewer the header floats over arbitrary imagery,
+                    // and #A0A0A0 falls below the WCAG contrast floor against
+                    // a bright sky even with the scrim. White at 75% renders
+                    // close to the same perceptual weight on the OLED canvas
+                    // but holds contrast on highlights.
+                    .foregroundStyle(Color.textPrimary.opacity(0.75))
                     .lineLimit(1)
             }
             Spacer(minLength: Spacing.s)
             closeButton
         }
-        .padding(.horizontal, Spacing.l)
+        .padding(.leading, Spacing.l)
+        // Align the close icon's visible right edge with the like button's
+        // visible right edge in the footer. Both buttons use a 44pt touch
+        // target with a smaller icon centered inside; the larger the icon,
+        // the smaller the invisible margin. We compensate so both icons
+        // sit the same distance from the screen edge.
+        .padding(.trailing, Spacing.l + (LikeButton.touchTarget - LikeButton.iconSize) / 2 - (Self.closeTouchTarget - Self.closeIconSize) / 2)
         .frame(height: Self.height)
     }
 

@@ -37,6 +37,14 @@ final class StoryListViewModel {
     /// seen/unseen rendering inside `StoryTrayItem`.
     private(set) var fullySeenStoryIDs: Set<String> = []
 
+    /// Cached per-item seen state for every loaded story, mirrored from the
+    /// persistent store at load time. The viewer dismiss path unions this
+    /// with the in-session seen-set so a story whose first items were seen
+    /// in a *previous* session and whose last item was seen *this* session
+    /// still flips the ring synchronously, without waiting on the
+    /// debounced disk read.
+    private(set) var knownSeenItemIDs: Set<String> = []
+
     // MARK: - Configuration
 
     private let pageSize: Int
@@ -133,14 +141,18 @@ final class StoryListViewModel {
     /// Re-checks the seen status for the given stories and merges the
     /// result into `fullySeenStoryIDs`. Called after each successful load
     /// and exposed for the viewer to refresh the tray on dismiss.
+    /// Also populates `knownSeenItemIDs` per item so `applySessionSeen`
+    /// can flip the ring synchronously without re-querying the store.
     func refreshFullySeen(for stories: [Story]) async {
         var fullySeen: Set<String> = []
+        var seenItems: Set<String> = []
         for story in stories {
             var allSeen = !story.items.isEmpty
             for item in story.items {
-                if await userStateRepository.isSeen(item.id) == false {
+                if await userStateRepository.isSeen(item.id) {
+                    seenItems.insert(item.id)
+                } else {
                     allSeen = false
-                    break
                 }
             }
             if allSeen { fullySeen.insert(story.id) }
@@ -149,6 +161,10 @@ final class StoryListViewModel {
         // overwrite for those that are.
         let touched = Set(stories.map(\.id))
         fullySeenStoryIDs = fullySeenStoryIDs.subtracting(touched).union(fullySeen)
+        // For items, drop the previous decisions for the touched stories
+        // and overwrite with the freshly observed seen items.
+        let touchedItemIDs = Set(stories.flatMap { $0.items.map(\.id) })
+        knownSeenItemIDs = knownSeenItemIDs.subtracting(touchedItemIDs).union(seenItems)
     }
 
     /// Convenience for callers (e.g. the viewer dismiss path) that hold a
@@ -162,14 +178,19 @@ final class StoryListViewModel {
     /// fully-seen ring decision. Used by the viewer dismiss path so the
     /// ring flips from unseen to seen the instant the cover dismisses,
     /// without waiting on the persistence flush race.
+    ///
+    /// The predicate unions the *session* seen-set with the *cached* seen
+    /// items captured at the last `refreshFullySeen` — so a story whose
+    /// first items were seen in a previous session and whose last item
+    /// was seen this session is detected as fully seen here, instead of
+    /// waiting for the async refresh round-trip.
     func applySessionSeen(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
+        knownSeenItemIDs.formUnion(ids)
         var newlyFullySeen: Set<String> = []
         for story in pages where !fullySeenStoryIDs.contains(story.id) {
             let allSeen = !story.items.isEmpty
-                && story.items.allSatisfy { ids.contains($0.id) || fullySeenStoryIDs.contains(story.id) }
-            // The `fullySeenStoryIDs.contains` short-circuit above is a
-            // safeguard if a partial in-session seen-set is merged twice.
+                && story.items.allSatisfy { knownSeenItemIDs.contains($0.id) }
             if allSeen {
                 newlyFullySeen.insert(story.id)
             }

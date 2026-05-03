@@ -19,10 +19,24 @@ struct StoryViewerView: View {
     /// `.navigationTransition(.zoom(sourceID:in:))` so the avatar morphs
     /// into the viewer header on present.
     let transitionNamespace: Namespace.ID
-    /// Fired after `.onDisappear` so the parent (StoryListView) can
-    /// refresh the rings of users whose seen state changed during the
-    /// session. The closure is `Sendable`-friendly (no captured Views).
-    var onDismiss: (() -> Void)? = nil
+    /// Fired the instant `state.shouldDismiss` flips to `true`, *before*
+    /// the cover starts its close animation. The tray applies the
+    /// in-session seen-set here so the avatar's ring resolves to its
+    /// final state on the same frame the matched zoom-out begins —
+    /// invoking on `.onDisappear` (which fires after the animation) made
+    /// the ring visibly flip a few frames *after* the cover landed.
+    /// Receives the *current* user (which may differ from the one the
+    /// viewer was opened on if the reader swiped horizontally between
+    /// users) so the tray can refresh that ring and scroll the matching
+    /// cell on screen as the zoom-out target.
+    /// The closure is `Sendable`-friendly (no captured Views).
+    var onDismiss: ((Story) -> Void)? = nil
+    /// Fired whenever the reader's *current* user changes (initial open
+    /// and every horizontal swipe). The tray uses this to keep the
+    /// matching `matchedTransitionSource` cell mounted and centred while
+    /// the cover is on screen, so a later dismiss collapses onto a live
+    /// anchor instead of a recycled LazyHStack slot.
+    var onCurrentUserChange: ((Story) -> Void)? = nil
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -36,6 +50,15 @@ struct StoryViewerView: View {
     /// is unambiguous. `nil` until the gesture engages (past
     /// `dragMinimumDistance`), then pinned for the rest of the gesture.
     @State private var lockedAxis: DragAxis?
+    // Note on `.navigationTransition(.zoom(sourceID:))` below: we read the
+    // current user's stableID directly from `state` instead of pinning it
+    // to the opening user via `@State`. iOS 18 reads `sourceID` lazily at
+    // dismiss time, so updating a `@State` in `onChange(of: shouldDismiss)`
+    // does *not* take effect — the cover collapses to whatever ID the
+    // transition was last bound to. Re-binding on every swipe was avoided
+    // earlier over flicker concerns on the chrome (close/like/header), but
+    // the chrome subtree is already insulated by `.animation(nil, value:
+    // currentUserIndex)`, so the re-bind no longer manifests visually.
 
     /// Translation past which the user-pagination swipe commits to the
     /// next/previous user (a quarter of the container width).
@@ -52,12 +75,49 @@ struct StoryViewerView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                // Background is *outside* the dismiss-card transform: it
+                // stays full-bleed and only fades, while image+chrome
+                // translate and scale together.
                 background
-                pagedStack(containerSize: geo.size)
-                chrome
+                ZStack {
+                    pagedStack(containerSize: geo.size)
+                    ViewerChrome(
+                        user: state.currentUser.user,
+                        timestamp: state.currentItem.createdAt,
+                        itemCount: state.currentUser.items.count,
+                        currentItemIndex: state.currentItemIndex,
+                        isLiked: state.isLiked,
+                        isImmersive: state.isImmersive,
+                        playback: state.playback,
+                        onClose: state.dismiss,
+                        onToggleLike: state.toggleLike,
+                    )
                     .opacity(state.isImmersive ? 0 : 1)
+                    // The chrome's `.animation(_:value: state.isImmersive)`
+                    // creates an ambient transaction that — without these
+                    // explicit opt-outs — sweeps every other state mutation
+                    // (item index, user index, like flip) into a fade
+                    // animation. The visible symptom is the close icon, like
+                    // heart, and avatar/timestamp re-rendering with a one-frame
+                    // crossfade on every item change. Pinning the implicit
+                    // animation to `isImmersive` alone keeps the chrome
+                    // diff-stable across navigation.
+                    .animation(nil, value: state.currentItemIndex)
+                    .animation(nil, value: state.currentUserIndex)
+                    .animation(nil, value: state.isLiked)
                     .animation(Motion.fastAnimation(reduceMotion: reduceMotion), value: state.isImmersive)
                     .allowsHitTesting(!state.isImmersive)
+                }
+                // Treat image + chrome as a single dismiss card: they
+                // translate and scale together so the chrome stays glued
+                // to the image during a swipe-down. Applying `.offset(y:)`
+                // only to the pagedStack (as before) made the image slide
+                // away from a stationary chrome — visually the story tore
+                // in half. Scaling around the gesture's anchor (top of
+                // the card) keeps the lift-away centre near the user's
+                // finger.
+                .offset(y: state.dragOffset)
+                .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15, anchor: .top)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             // Pages are laid out as one wide HStack offset behind the
@@ -67,10 +127,12 @@ struct StoryViewerView: View {
             .contentShape(Rectangle())
             .simultaneousGesture(unifiedDragGesture(containerSize: geo.size))
         }
-        .background(Color.background.opacity(1.0 - state.dragProgress))
         .ignoresSafeArea(edges: .horizontal)
         .navigationTransition(.zoom(sourceID: state.currentUser.user.stableID, in: transitionNamespace))
-        .task { await state.onAppear() }
+        .task {
+            onCurrentUserChange?(state.currentUser)
+            await state.onAppear()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 state.playback.resume()
@@ -81,18 +143,22 @@ struct StoryViewerView: View {
         .onChange(of: state.shouldDismiss) { _, shouldDismiss in
             if shouldDismiss {
                 Haptics.dismiss()
+                // Notify the tray *before* requesting dismissal so the
+                // optimistic ring update is committed in the same
+                // transaction that drives the matched zoom-out.
+                onDismiss?(state.currentUser)
                 dismiss()
             }
         }
         .onChange(of: state.currentUserIndex) { _, _ in
             Haptics.userChange()
+            onCurrentUserChange?(state.currentUser)
         }
         .onDisappear {
             // Flush persistence on the way out so seen/like for the last
             // session reach disk before the user backgrounds the app.
             // fire-and-forget — the View is being torn down.
             Task { await state.flushPendingPersistence() }
-            onDismiss?()
         }
     }
 
@@ -153,12 +219,11 @@ struct StoryViewerView: View {
         // collides with our manual one.
         .animation(nil, value: state.currentUserIndex)
         .animation(nil, value: state.currentItemIndex)
-        // Vertical dismiss drag transforms the whole pager as one card,
-        // not each page individually. This avoids neighbour pages
-        // bleeding into the active page during a swipe-down — the
-        // single-card affordance matches Instagram's dismiss feel.
-        .offset(y: state.dragOffset)
-        .scaleEffect(1.0 - CGFloat(state.dragProgress) * 0.15)
+        // The 50 ms playback tick observed by the chrome (progress bar)
+        // can otherwise get swept into a parent transaction and cause a
+        // sub-frame redraw of the LazyImage tree, which reads as a
+        // flicker on every tick.
+        .animation(nil, value: state.playback.progress)
     }
 
     /// Picks the item to render for `story`. The active page renders the
@@ -186,13 +251,30 @@ struct StoryViewerView: View {
                     let dy = abs(value.translation.height)
                     lockedAxis = dx >= dy ? .horizontal : .vertical
                 }
-                switch lockedAxis {
-                case .horizontal:
-                    horizontalDrag = clampedHorizontal(value.translation.width, containerWidth: containerSize.width)
-                case .vertical:
-                    state.updateDrag(translationY: value.translation.height, containerHeight: containerSize.height)
-                case .none:
-                    return
+                // We use `withAnimation(.linear(duration: 0))` rather than
+                // `withTransaction { disablesAnimations = true }` here. They
+                // sound equivalent but they aren't: `disablesAnimations`
+                // only blocks *new* animations from being attached to the
+                // mutation, it does *not* cancel an animation already in
+                // flight on the same property. After a snap-back from a
+                // previous gesture (`withAnimation(snapBack) { ... }`)
+                // CoreAnimation may still be interpolating `horizontalDrag`
+                // toward 0 when the next drag begins. A naked mutation then
+                // produces an out-of-order sample (time 0 arriving after
+                // time 0.0166s), which is exactly the "Invalid sample
+                // AnimatablePair<…> with time … > last time …" warning.
+                // A zero-duration animation *replaces* the in-flight
+                // animation on the property and snaps to the new value on
+                // the same frame — which is what we actually want.
+                withAnimation(.linear(duration: 0)) {
+                    switch lockedAxis {
+                    case .horizontal:
+                        horizontalDrag = clampedHorizontal(value.translation.width, containerWidth: containerSize.width)
+                    case .vertical:
+                        state.updateDrag(translationY: value.translation.height, containerHeight: containerSize.height)
+                    case .none:
+                        return
+                    }
                 }
             }
             .onEnded { value in
@@ -324,28 +406,116 @@ struct StoryViewerView: View {
         return 1.0 - clamped * 0.4   // 1.0 → 0.6
     }
 
-    // MARK: - Chrome
+}
 
-    private var chrome: some View {
+// MARK: - Chrome
+
+/// Header + footer + progress bar, isolated from the parent so the 50 ms
+/// `playback.progress` tick redraws only the segmented bar — not the
+/// username, timestamp, close button or like icon. SwiftUI propagates an
+/// `@Observable` mutation up to the smallest view that reads it; reading
+/// `progress` inside `ProgressBarBinding` keeps the chrome subtree
+/// stable while the bar continues to fill smoothly.
+private struct ViewerChrome: View {
+
+    let user: User
+    let timestamp: Date
+    let itemCount: Int
+    let currentItemIndex: Int
+    let isLiked: Bool
+    let isImmersive: Bool
+    let playback: PlaybackController
+    let onClose: () -> Void
+    let onToggleLike: @MainActor () -> Void
+
+    var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: Spacing.s) {
-                SegmentedProgressBar(
-                    count: state.currentUser.items.count,
-                    currentIndex: state.currentItemIndex,
-                    progress: state.playback.progress,
+                ProgressBarBinding(
+                    count: itemCount,
+                    currentIndex: currentItemIndex,
+                    playback: playback,
                 )
                 .padding(.horizontal, Spacing.l)
                 StoryViewerHeader(
-                    user: state.currentUser.user,
-                    timestamp: state.currentItem.createdAt,
-                    onClose: state.dismiss,
+                    user: user,
+                    timestamp: timestamp,
+                    onClose: onClose,
                 )
             }
             .padding(.top, Spacing.s)
+            .background(alignment: .top) { Self.topScrim }
             Spacer()
-            StoryViewerFooter(isLiked: state.isLiked, onToggleLike: state.toggleLike)
+            StoryViewerFooter(isLiked: isLiked, onToggleLike: onToggleLike)
                 .padding(.bottom, Spacing.s)
+                .background(alignment: .bottom) { Self.bottomScrim }
         }
+    }
+
+    // Scrims sit *behind* the chrome (header/progress at top, like button at
+    // bottom) to recover legibility when the underlying image is bright (sky,
+    // snow, beach). Without them, white username/timestamp text disappears
+    // into highlights and the chrome reads as broken. Functional, not
+    // decorative — the design.md "no gradients" rule targets the BeReal
+    // aesthetic (rings, canvas), but a legibility scrim is the same primitive
+    // Instagram uses and is invisible on dark images. Pinned to safe-area
+    // edges so the fade lands beyond the status bar / home indicator.
+    // `allowsHitTesting(false)` so taps and long-press still reach the page.
+    //
+    // Curve choice: a three-stop gradient (dense / mid / clear) holds opacity
+    // through the band where the text actually sits, then drops to zero in
+    // the lower half. A two-stop linear ramp made the fall-off start
+    // immediately at the top — the timestamp ended up sitting on ~30% black
+    // even though the top edge was 65%, which is exactly where legibility
+    // breaks against a bright sky.
+    private static let scrimHeight: CGFloat = 180
+
+    private static var topScrim: some View {
+        LinearGradient(
+            stops: [
+                .init(color: Color.black.opacity(0.65), location: 0.0),
+                .init(color: Color.black.opacity(0.45), location: 0.5),
+                .init(color: Color.black.opacity(0.0),  location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom,
+        )
+        .frame(height: scrimHeight)
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
+    }
+
+    private static var bottomScrim: some View {
+        LinearGradient(
+            stops: [
+                .init(color: Color.black.opacity(0.0),  location: 0.0),
+                .init(color: Color.black.opacity(0.45), location: 0.5),
+                .init(color: Color.black.opacity(0.65), location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom,
+        )
+        .frame(height: scrimHeight)
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Thin wrapper that reads `playback.progress` so the Observation tracking
+/// is scoped to the progress bar alone — the surrounding `ViewerChrome`
+/// does not subscribe to the 50 ms tick and stays diff-stable.
+private struct ProgressBarBinding: View {
+
+    let count: Int
+    let currentIndex: Int
+    let playback: PlaybackController
+
+    var body: some View {
+        SegmentedProgressBar(
+            count: count,
+            currentIndex: currentIndex,
+            progress: playback.progress,
+        )
     }
 }
 

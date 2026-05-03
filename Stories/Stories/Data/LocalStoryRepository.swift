@@ -2,8 +2,11 @@ import Foundation
 
 /// Loads `stories.json` from the bundle once at init, then serves
 /// paginated views over the cached `baseStories` array. Pagination
-/// recycles the local list (mod `n`) and rewrites IDs with a `-p{n}`
-/// suffix so repeated users have distinct seen/like state across pages.
+/// recycles the local list (mod `n`) and rewrites IDs with a `-g{n}`
+/// suffix where `n` is the cell's global position in the paginated
+/// sequence — so every cell has a unique ID even when the JSON has
+/// fewer users than the page size (otherwise the same base story would
+/// recur within a single page and collide on `Identifiable`).
 actor LocalStoryRepository: StoryRepository {
 
     private let baseStories: [Story]
@@ -39,8 +42,9 @@ actor LocalStoryRepository: StoryRepository {
         let n = baseStories.count
         guard n > 0 else { return [] }
         return (0..<pageSize).map { i in
-            let base = baseStories[(pageIndex * pageSize + i) % n]
-            return base.withPageSuffix(pageIndex)
+            let globalIndex = pageIndex * pageSize + i
+            let base = baseStories[globalIndex % n]
+            return base.withGlobalIndex(globalIndex)
         }
     }
 
